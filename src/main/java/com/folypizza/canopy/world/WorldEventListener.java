@@ -83,6 +83,25 @@ public class WorldEventListener implements Listener {
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onBucketEmpty(org.bukkit.event.player.PlayerBucketEmptyEvent e) {
+        String fluid = e.getBucket() == org.bukkit.Material.LAVA_BUCKET ? "minecraft:lava" : "minecraft:water";
+        recordEdit(e.getBlock(), fluid);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onBucketFill(org.bukkit.event.player.PlayerBucketFillEvent e) {
+        recordEdit(e.getBlock(), "minecraft:air");
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onFluidFlow(org.bukkit.event.block.BlockFromToEvent e) {
+        // Mirror fluid spread (and dragon-egg moves): the destination block takes on the
+        // moving block's state. Levels are approximate but the fluid appears across the seam.
+        org.bukkit.block.Block to = e.getToBlock();
+        recordEdit(to, e.getBlock().getBlockData().getAsString());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onEntityExplode(org.bukkit.event.entity.EntityExplodeEvent e) {
         for (org.bukkit.block.Block b : e.blockList()) recordEdit(b, "minecraft:air");
     }

@@ -299,7 +299,7 @@ public class CanopyPlugin extends JavaPlugin {
         int peerPort = getConfig().getInt("transfer.peer-port", 25566);
         // Register the proxy plugin-message channel so we can request server switches.
         getServer().getMessenger().registerOutgoingPluginChannel(this, BoundaryTransferListener.SWITCH_CHANNEL);
-        int buffer = getConfig().getInt("transfer.buffer", 0);
+        int buffer = getConfig().getInt("transfer.buffer", 2);
         boundaryTransferListener = new BoundaryTransferListener(
             this, transferEnabled, transferBoundaryX, buffer, transferOwnsWest, mode, peerServer, peerHost, peerPort,
             playerStateInbox, peerManager);
