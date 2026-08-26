@@ -1,0 +1,92 @@
+# Canopy — Distributed Folia Shard Orchestration Configuration
+#
+# Place this file at plugins/Canopy/canopy/config.yml in your Folia server directory.
+
+# Shard configuration
+shard:
+  # Number of Folia regions in this JVM (from bukkit.yml regions)
+  # 1 = single-process, 4 = multi-region
+  num-regions: 1
+
+  # Shard ID used for tile version tracking.
+  # "auto" derives a unique id from host + gRPC port; set an explicit number
+  # (e.g. 1, 2, 3) when running multiple co-located shards.
+  id: auto
+
+  # Peer shards in this cluster, as "host:grpcPort". Each peer is polled for
+  # health over gRPC and registered for halo tile pulls. Leave empty for a
+  # standalone shard.
+  peers: []
+
+  # World border extent in blocks along each axis. This bounds the area the
+  # partition map divides into shards. Set to 0 for an unbounded world, which
+  # falls back to a default 128-tile grid per axis.
+  world-border-x: 0
+  world-border-z: 0
+
+# Partition map settings
+partition:
+  # Initial partition type: "equal-area" or "manual"
+  initial: equal-area
+
+  # For equal-area: number of shards to create
+  shard-count: 1
+
+  # Tile width for each shard (tiles per shard in x/z)
+  tile-width: 16
+
+# Seamless cross-shard player movement.
+# The world is split at a single X boundary; each shard owns one side. The band
+# [boundary-buffer, boundary+buffer) is an inaccessible "underlap" — a player who
+# reaches it is handed to the peer shard and lands at a fixed point on the far edge.
+transfer:
+  enabled: false
+  boundary-x: 0        # X coordinate of the seam between the two shards
+  owns: west           # "west" owns x < (boundary-x - buffer); "east" owns x >= (boundary-x + buffer)
+  buffer: 4            # half-width (blocks) of the inaccessible band; players hop over it
+  # mode: "proxy" switches the player via a Velocity proxy (reconfigure screen, no
+  # login screen); "transfer" uses the vanilla transfer packet (full reconnect).
+  mode: proxy
+  peer-server: east    # Velocity server name to switch to (proxy mode)
+  peer-host: localhost # transfer-packet fallback (transfer mode only)
+  peer-port: 25566
+  show-seam: true
+  # Width (blocks) of the near-seam halo strip mirrored from the peer shard, so edits
+  # on the far side are visible before you cross.
+  halo-width: 16
+
+# gRPC settings (tile version / shard coordination)
+grpc:
+  port: 50051
+  max-message-bytes: 67108864  # 64MB
+
+# HTTP metrics endpoint (raw per-region metrics JSON)
+metrics:
+  enabled: true
+  port: 8080
+
+# Per-region fluid tick budget
+per-region:
+  fluid-tick-budget: 200
+  fluid-tick-defer-limit: 2000
+
+# Halo / tile version settings (Phase 1)
+halo:
+  width-tiles: 4  # 4 tiles = 64 blocks on each side
+  update-interval-ms: 100
+  stale-ttl-ms: 5000
+
+# Ownership lease (Phase 3.5)
+lease:
+  # Redis URL for distributed lease coordination
+  # Leave empty to use in-memory mode
+  redis-url: ""
+  # Default lease TTL in milliseconds
+  ttl-ms: 30000
+
+# Telemetry push interval to control plane
+telemetry:
+  interval-seconds: 10
+
+# Logging
+log-level: INFO
