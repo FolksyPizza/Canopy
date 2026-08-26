@@ -1,0 +1,204 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+option java_package = "com.folypizza.canopy.proto";
+
+// Tile version tracking for halo invalidation (Phase 1)
+service TileVersionService {
+    // Query which tiles have been updated since a given version
+    rpc GetUpdatedTiles(TileVersionQuery) returns (TileVersionResponse);
+}
+
+message TilePosition {
+    int32 x = 1;  // tile X (each tile = 16 chunks = 256 blocks)
+    int32 z = 2;  // tile Z (each tile = 16 chunks = 256 blocks)
+}
+
+message TileVersionQuery {
+    uint64 origin_shard_id = 1;
+    // Only request tiles in this rectangle
+    TilePosition min_tile = 2;
+    TilePosition max_tile = 3;
+    // Tiles the query shard already knows up to this version
+    repeated TileVersion known_versions = 4;
+}
+
+message TileVersion {
+    TilePosition tile = 1;
+    uint32 version = 2;
+}
+
+message TileVersionResponse {
+    uint64 shard_id = 1;
+    // Current tile version at time of query
+    uint64 current_version = 2;
+    // Updated tiles (only those where version > query version)
+    repeated TileData tiles = 3;
+}
+
+message TileData {
+    TilePosition position = 1;
+    uint32 version = 2;
+    // Section deltas (only changed sections)
+    repeated SectionDelta sections = 3;
+}
+
+message SectionDelta {
+    int32 section_y = 1;
+    // Compact block state array: each int encodes a 4x4x1 slab
+    repeated int32 blocks = 2;
+}
+
+// Shard coordination service (Phase 2/3)
+service ShardCoordinationService {
+    rpc GetShardInfo(ShardInfoQuery) returns (ShardInfo);
+    rpc GetHealth(ShardHealthQuery) returns (ShardHealth);
+    rpc GetTileVersionStream(TileVersionQuery) returns (stream TileVersionResponse);
+    // Hand a player's full state to the destination shard just before a proxy switch.
+    rpc PushPlayerState(PlayerStatePush) returns (PlayerStateAck);
+    // Pull block edits in a near-seam strip for halo mirroring.
+    rpc GetHaloEdits(HaloEditsQuery) returns (HaloEdits);
+}
+
+message PlayerStatePush {
+    string uuid = 1;
+    bytes blob = 2;   // opaque PlayerStateCodec payload
+}
+
+message PlayerStateAck {
+    bool ok = 1;
+}
+
+message HaloEditsQuery {
+    int32 min_x = 1;
+    int32 max_x = 2;
+    int64 since_seq = 3;
+}
+
+message BlockEdit {
+    int32 x = 1;
+    int32 y = 2;
+    int32 z = 3;
+    string data = 4;  // BlockData string, e.g. "minecraft:stone"
+    int64 seq = 5;
+}
+
+message HaloEdits {
+    repeated BlockEdit edits = 1;
+    int64 max_seq = 2;
+}
+
+message ShardInfoQuery {
+    uint64 shard_id = 1;
+    TilePosition tile = 2;  // position to query
+}
+
+message ShardInfo {
+    uint64 shard_id = 1;
+    string host = 2;
+    string region_id = 3;
+    TilePosition tile = 4;
+}
+
+message ShardHealthQuery {
+    uint64 shard_id = 1;
+    TilePosition tile = 2;
+}
+
+message ShardHealth {
+    uint64 shard_id = 1;
+    double tps = 2;
+    double mspt = 3;
+    int32 player_count = 4;
+    int32 entity_count = 5;
+    int32 fluid_ticks_in_last_phase = 6;
+    int32 chunk_io_pending = 7;
+    repeated PlayerPos players = 8;
+}
+
+message PlayerPos {
+    string id = 1;
+    double x = 2;
+    double z = 3;
+}
+
+// Migration service (Phase 3)
+service MigrationService {
+    rpc InitiateMigration(MigrationInitRequest) returns (MigrationInitResponse);
+    rpc StreamChunks(MigrationChunkRequest) returns (stream MigrationChunkResponse);
+    rpc AcknowledgeMigration(MigrationAckRequest) returns (MigrationAckResponse);
+}
+
+message MigrationInitRequest {
+    uint64 source_shard = 1;
+    uint64 dest_shard = 2;
+    // Chunks to migrate
+    repeated ChunkPos chunk_positions = 3;
+}
+
+message MigrationInitResponse {
+    uint64 expected_passes = 1;
+    uint32 chunk_count = 2;
+    // Current version of each chunk at this moment (for dirty tracking)
+    repeated ChunkVersion chunk_versions = 3;
+}
+
+message MigrationChunkRequest {
+    uint64 source_shard = 1;
+    uint64 dest_shard = 2;
+    bool is_final = 3;
+}
+
+message MigrationChunkResponse {
+    ChunkData chunk = 1;
+    bool is_dirty = 2;
+}
+
+message MigrationAckRequest {
+    uint64 source_shard = 1;
+    uint64 dest_shard = 2;
+    uint64 migration_id = 3;
+}
+
+message MigrationAckResponse {
+    uint64 migration_id = 1;
+    bool success = 2;
+    bool migration_started = 3;
+}
+
+message ChunkPos {
+    int32 x = 1;
+    int32 z = 2;
+}
+
+message ChunkVersion {
+    int32 chunk_x = 1;
+    int32 chunk_z = 2;
+    uint32 version = 3;
+}
+
+message ChunkData {
+    int32 chunk_x = 1;
+    int32 chunk_z = 2;
+    bytes section_data = 3;       // block states + palette
+    bytes lighting_data = 4;      // skylight + blocklight
+    bytes entity_data = 5;        // entities in chunk
+    repeated BlockEntity block_entities = 6;
+    repeated ScheduledTick scheduled_ticks = 7;
+}
+
+message BlockEntity {
+    int32 x = 1;
+    int32 y = 2;
+    int32 z = 3;
+    string type = 4;             // 'chest', 'sign', 'furnace', etc.
+    bytes nbt = 5;               // serialized NBT
+}
+
+message ScheduledTick {
+    string type = 1;             // 'block', 'fluid', 'random', 'entity'
+    string key = 2;              // block pos or entity uuid
+    int32 priority = 3;
+    int64 expiration_tick = 4;
+    bytes data = 5;              // tick-specific data
+}

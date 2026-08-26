@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+option java_package = "com.folypizza.canopy.proto";
+
+import "tile_version.proto";
+
+// Entity state for migration (Phase 3)
+message EntityState {
+    string entity_id = 1;
+    int32 entity_type = 2;
+    double x = 3;
+    double y = 4;
+    double z = 5;
+    double yaw = 6;
+    double pitch = 7;
+    bytes metadata = 8;
+    bytes inventory = 9;
+    int32 dimension = 10;
+}
+
+// Migration session tracking
+message MigrationSession {
+    uint64 migration_id = 1;
+    uint64 source_shard = 2;
+    uint64 dest_shard = 3;
+    uint64 started_at = 4;
+    uint64 completed_at = 5;
+    MigrationState state = 6;
+    repeated ChunkPos chunk_positions = 7;
+    string world = 8;
+}
+
+enum MigrationState {
+    INITIATED = 0;
+    PRE_COPY = 1;
+    DIRTY_TRACKING = 2;
+    FREEZE = 3;
+    TRANSFERRING = 4;
+    COMPLETE = 5;
+    ABORTED = 6;
+}
