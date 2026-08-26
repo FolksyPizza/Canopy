@@ -43,6 +43,10 @@ public class PeerManager {
     private final boolean ownsWest;
     // Per-peer high-water seq for halo edits already applied.
     private final ConcurrentHashMap<String, Long> haloLastSeq = new ConcurrentHashMap<>();
+    // Latest world time reported by each peer (peer shard id -> full time), for time sync.
+    private final ConcurrentHashMap<Long, Long> peerWorldTimes = new ConcurrentHashMap<>();
+    private static final long PEER_TIMEOUT_MS = 15_000;
+    private volatile long lastPeerContactMs = 0;
 
     private final ConcurrentHashMap<String, ManagedChannel> channels = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, TileVersionClient> tileClients = new ConcurrentHashMap<>();
@@ -105,11 +109,10 @@ public class PeerManager {
                 .withDeadlineAfter(RPC_DEADLINE_SEC, TimeUnit.SECONDS);
             var resp = stub.getHaloEdits(com.folypizza.canopy.proto.HaloEditsQuery.newBuilder()
                 .setMinX(minX).setMaxX(maxX).setSinceSeq(since).build());
-            log.info("[halo] pull peer strip [{}..{}] since={} -> {} edits", minX, maxX, since, resp.getEditsCount());
             if (resp.getEditsCount() == 0) return;
             haloLastSeq.put(addr, resp.getMaxSeq());
             applyHaloEdits(resp.getEditsList());
-            log.info("[halo] mirrored {} edits from peer strip [{}..{}]", resp.getEditsCount(), minX, maxX);
+            log.debug("[halo] mirrored {} edits from peer strip [{}..{}]", resp.getEditsCount(), minX, maxX);
         } catch (Exception e) {
             log.warn("[halo] pull from {} failed: {}", addr, e.getMessage());
         }
@@ -206,11 +209,12 @@ public class PeerManager {
                     plist.add(m);
                 }
                 peerPlayers.put(peerId, plist);
+                peerWorldTimes.put(peerId, health.getWorldTime());
+                lastPeerContactMs = System.currentTimeMillis();
 
-                log.info("[peer] {} shard={} tps={} mspt={} players={} entities={}",
+                log.debug("[peer] {} shard={} tps={} mspt={} players={}",
                     addr, peerId, String.format("%.2f", health.getTps()),
-                    String.format("%.2f", health.getMspt()), health.getPlayerCount(),
-                    health.getEntityCount());
+                    String.format("%.2f", health.getMspt()), health.getPlayerCount());
 
                 // Mirror the peer's near-seam block edits into our local halo strip.
                 pullHaloEdits(addr, channel);
@@ -218,6 +222,26 @@ public class PeerManager {
                 log.warn("[peer] health poll to {} failed: {}", addr, e.getMessage());
             }
         }
+    }
+
+    /** True if we have heard from at least one peer recently (destination reachable). */
+    public boolean isPeerHealthy() {
+        return System.currentTimeMillis() - lastPeerContactMs < PEER_TIMEOUT_MS;
+    }
+
+    /**
+     * World time of the time authority (the reachable peer with the lowest shard id, when
+     * that id is below ours), or -1 if this shard is the authority / no peer known.
+     */
+    public long getAuthorityWorldTime(long localShardId) {
+        long bestId = Long.MAX_VALUE, bestTime = -1;
+        for (var e : peerWorldTimes.entrySet()) {
+            if (e.getKey() < localShardId && e.getKey() < bestId) {
+                bestId = e.getKey();
+                bestTime = e.getValue();
+            }
+        }
+        return bestTime;
     }
 
     public int getConnectedPeerCount() {

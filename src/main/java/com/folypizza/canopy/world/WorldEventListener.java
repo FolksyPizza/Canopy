@@ -77,12 +77,19 @@ public class WorldEventListener implements Listener {
     }
 
     private void recordEdit(org.bukkit.block.Block b, String blockData) {
-        boolean in = inMyStrip(b.getX());
-        log.info("[halo] block edit at x={} y={} z={} inStrip={} (strip owns={} boundary={} halo={})",
-            b.getX(), b.getY(), b.getZ(), in, ownsWest ? "west" : "east", boundaryX, haloWidth);
-        if (in) {
+        if (inMyStrip(b.getX())) {
             haloEditStore.record(b.getX(), b.getY(), b.getZ(), blockData);
         }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onEntityExplode(org.bukkit.event.entity.EntityExplodeEvent e) {
+        for (org.bukkit.block.Block b : e.blockList()) recordEdit(b, "minecraft:air");
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onBlockExplode(org.bukkit.event.block.BlockExplodeEvent e) {
+        for (org.bukkit.block.Block b : e.blockList()) recordEdit(b, "minecraft:air");
     }
 
     /** Loaded-chunk count maintained from chunk events (safe to read from any thread). */

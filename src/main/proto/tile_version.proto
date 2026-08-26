@@ -114,6 +114,7 @@ message ShardHealth {
     int32 fluid_ticks_in_last_phase = 6;
     int32 chunk_io_pending = 7;
     repeated PlayerPos players = 8;
+    int64 world_time = 9;   // overworld full time, for cross-shard time sync
 }
 
 message PlayerPos {
