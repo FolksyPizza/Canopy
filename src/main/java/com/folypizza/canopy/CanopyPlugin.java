@@ -78,6 +78,8 @@ public class CanopyPlugin extends JavaPlugin {
     private double transferBoundaryX;
     private boolean transferOwnsWest;
     private int transferHaloWidth;
+    // Cached local overworld time (updated on the global region thread) for cross-shard sync.
+    private final java.util.concurrent.atomic.AtomicLong localWorldTime = new java.util.concurrent.atomic.AtomicLong(0);
 
     // Optional Redis-backed coordination (only when lease.redis-url is configured).
     private RedisClient redisClient;
@@ -254,7 +256,7 @@ public class CanopyPlugin extends JavaPlugin {
         // The gRPC-exposed coordination + migration services share the plugin's live state.
         ShardCoordinationServiceImpl coordinationService = new ShardCoordinationServiceImpl(
             shardId, getHostAddress(), metricsCollector, entityTracker, routingProxy,
-            partitionMap, tileVersionService, playerStateInbox, haloEditStore);
+            partitionMap, tileVersionService, playerStateInbox, haloEditStore, localWorldTime::get);
         MigrationServiceImpl migrationGrpc = new MigrationServiceImpl(shardId, migrationService, this);
 
         grpcServer = new GrpcServer(grpcPort, tileVersionService, coordinationService, migrationGrpc);
@@ -297,7 +299,7 @@ public class CanopyPlugin extends JavaPlugin {
         int peerPort = getConfig().getInt("transfer.peer-port", 25566);
         // Register the proxy plugin-message channel so we can request server switches.
         getServer().getMessenger().registerOutgoingPluginChannel(this, BoundaryTransferListener.SWITCH_CHANNEL);
-        int buffer = getConfig().getInt("transfer.buffer", 4);
+        int buffer = getConfig().getInt("transfer.buffer", 0);
         boundaryTransferListener = new BoundaryTransferListener(
             this, transferEnabled, transferBoundaryX, buffer, transferOwnsWest, mode, peerServer, peerHost, peerPort,
             playerStateInbox, peerManager);
@@ -324,6 +326,19 @@ public class CanopyPlugin extends JavaPlugin {
         }
 
         peerManager.start();
+
+        // Cross-shard world-time sync: the lowest shard id is the authority; other shards
+        // follow it so day/night stays aligned across the seam. Runs on the global region
+        // thread, which owns world time.
+        getServer().getGlobalRegionScheduler().runAtFixedRate(this, task -> {
+            if (getServer().getWorlds().isEmpty()) return;
+            org.bukkit.World w = getServer().getWorlds().get(0);
+            localWorldTime.set(w.getFullTime());
+            long authTime = peerManager != null ? peerManager.getAuthorityWorldTime(shardId) : -1;
+            if (authTime >= 0 && Math.abs(authTime - w.getFullTime()) > 20) {
+                w.setFullTime(authTime);
+            }
+        }, 40L, 40L);
 
         globalScheduler.scheduleAtFixedRate(() -> {
             if (metricsCollector.getLoadedRegionCount() == 0) return;

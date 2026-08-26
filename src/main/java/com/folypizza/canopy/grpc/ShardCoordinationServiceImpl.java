@@ -32,12 +32,15 @@ public class ShardCoordinationServiceImpl extends ShardCoordinationServiceGrpc.S
     private final TileVersionServiceImpl tileVersionService;
     private final com.folypizza.canopy.routing.PlayerStateInbox playerStateInbox;
     private final com.folypizza.canopy.halo.HaloEditStore haloEditStore;
+    private final java.util.function.LongSupplier worldTimeSupplier;
 
     public ShardCoordinationServiceImpl(long shardId, String host, MetricsCollector metrics,
                                         EntityTracker entityTracker, PlayerRoutingProxy routing,
                                         PartitionMap partitionMap, TileVersionServiceImpl tileVersionService,
                                         com.folypizza.canopy.routing.PlayerStateInbox playerStateInbox,
-                                        com.folypizza.canopy.halo.HaloEditStore haloEditStore) {
+                                        com.folypizza.canopy.halo.HaloEditStore haloEditStore,
+                                        java.util.function.LongSupplier worldTimeSupplier) {
+        this.worldTimeSupplier = worldTimeSupplier;
         this.shardId = shardId;
         this.host = host;
         this.metrics = metrics;
@@ -72,7 +75,8 @@ public class ShardCoordinationServiceImpl extends ShardCoordinationServiceGrpc.S
             .setPlayerCount(routing.getActiveRoutes())
             .setEntityCount(entityTracker.getTrackedCount())
             .setFluidTicksInLastPhase(0)
-            .setChunkIoPending(0);
+            .setChunkIoPending(0)
+            .setWorldTime(worldTimeSupplier != null ? worldTimeSupplier.getAsLong() : 0L);
         for (var st : entityTracker.getEntityStates().values()) {
             if (!"player".equals(st.entityType())) continue;
             health.addPlayers(com.folypizza.canopy.proto.PlayerPos.newBuilder()

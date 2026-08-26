@@ -57,6 +57,9 @@ public class BoundaryTransferListener implements Listener {
     private final Set<UUID> transferring = ConcurrentHashMap.newKeySet();
     // When each player joined, to suppress transfer during the spawn/restore settling window.
     private final java.util.Map<UUID, Long> joinedAt = new ConcurrentHashMap<>();
+    // Throttle the maintenance message per player.
+    private static final long DENY_MSG_MS = 3000;
+    private final java.util.Map<UUID, Long> lastDenyMsg = new ConcurrentHashMap<>();
 
     public BoundaryTransferListener(JavaPlugin plugin, boolean enabled, double boundaryX, int buffer,
                                     boolean ownsWest, String mode, String peerServer,
@@ -154,11 +157,21 @@ public class BoundaryTransferListener implements Listener {
         // while a cookie-restore teleport is still landing the player on our side).
         Long jt = joinedAt.get(p.getUniqueId());
         if (jt != null && System.currentTimeMillis() - jt < SETTLE_MS) return;
+
+        // If the destination shard is unreachable, refuse the crossing: knock the player
+        // back into our region and tell them the region is under maintenance.
+        if (peerManager != null && !peerManager.isPeerHealthy()) {
+            denyCrossing(p, to);
+            return;
+        }
+
         if (!transferring.add(p.getUniqueId())) return; // already transferring
 
-        // Deterministic landing on the far edge of the buffer band — the player "hops over"
-        // the inaccessible band and always lands at the same X (no drift), keeping y/z.
-        Location landing = new Location(p.getWorld(), landingX(), to.getY(), to.getZ(),
+        // Land at the exact crossing position on the peer (buffer 0 = 1:1 continuous
+        // coordinates). With a non-zero buffer the player hops the inaccessible band and
+        // lands at a fixed far-edge X (which necessarily offsets X by the buffer width).
+        double landX = buffer > 0 ? landingX() : to.getX();
+        Location landing = new Location(p.getWorld(), landX, to.getY(), to.getZ(),
             to.getYaw(), to.getPitch());
         byte[] payload = (landing.getX() + ";" + landing.getY() + ";" + landing.getZ() + ";"
             + landing.getYaw() + ";" + landing.getPitch()).getBytes(StandardCharsets.UTF_8);
@@ -191,9 +204,29 @@ public class BoundaryTransferListener implements Listener {
         }
     }
 
+    /** Refuse a crossing to a down shard: knock the player back and show a maintenance notice. */
+    private void denyCrossing(Player p, Location to) {
+        double backX = ownsWest ? (boundaryX - 2) : (boundaryX + 2);
+        Location back = new Location(p.getWorld(), backX, to.getY(), to.getZ(), to.getYaw(), to.getPitch());
+        org.bukkit.util.Vector kb = new org.bukkit.util.Vector(ownsWest ? -0.6 : 0.6, 0.3, 0);
+        p.teleportAsync(back).thenAccept(ok ->
+            p.getScheduler().run(plugin, t -> p.setVelocity(kb), null));
+
+        long now = System.currentTimeMillis();
+        Long last = lastDenyMsg.get(p.getUniqueId());
+        if (last == null || now - last > DENY_MSG_MS) {
+            lastDenyMsg.put(p.getUniqueId(), now);
+            p.sendMessage(net.kyori.adventure.text.Component.text(
+                "The region you are trying to connect to is currently under maintenance. "
+                + "Please try again in a few minutes.",
+                net.kyori.adventure.text.format.NamedTextColor.RED));
+        }
+    }
+
     @EventHandler
     public void onQuit(PlayerQuitEvent e) {
         transferring.remove(e.getPlayer().getUniqueId());
         joinedAt.remove(e.getPlayer().getUniqueId());
+        lastDenyMsg.remove(e.getPlayer().getUniqueId());
     }
 }

@@ -36,14 +36,15 @@ partition:
   tile-width: 16
 
 # Seamless cross-shard player movement.
-# The world is split at a single X boundary; each shard owns one side. The band
-# [boundary-buffer, boundary+buffer) is an inaccessible "underlap" — a player who
-# reaches it is handed to the peer shard and lands at a fixed point on the far edge.
+# The world is split at a single X boundary; each shard owns one side. With buffer 0 the
+# seam is a single line with 1:1 continuous coordinates, so a player lands on the exact
+# same block on the peer shard. A non-zero buffer makes the band inaccessible but offsets
+# X by the buffer width on crossing (a deliberate discontinuity).
 transfer:
   enabled: false
   boundary-x: 0        # X coordinate of the seam between the two shards
   owns: west           # "west" owns x < (boundary-x - buffer); "east" owns x >= (boundary-x + buffer)
-  buffer: 4            # half-width (blocks) of the inaccessible band; players hop over it
+  buffer: 0            # half-width (blocks) of an inaccessible band; 0 = single seam line
   # mode: "proxy" switches the player via a Velocity proxy (reconfigure screen, no
   # login screen); "transfer" uses the vanilla transfer packet (full reconnect).
   mode: proxy
