@@ -299,18 +299,18 @@ public class CanopyPlugin extends JavaPlugin {
         int peerPort = getConfig().getInt("transfer.peer-port", 25566);
         // Register the proxy plugin-message channel so we can request server switches.
         getServer().getMessenger().registerOutgoingPluginChannel(this, BoundaryTransferListener.SWITCH_CHANNEL);
-        int buffer = getConfig().getInt("transfer.buffer", 2);
+        int buffer = getConfig().getInt("transfer.buffer", 4);
         boundaryTransferListener = new BoundaryTransferListener(
             this, transferEnabled, transferBoundaryX, buffer, transferOwnsWest, mode, peerServer, peerHost, peerPort,
             playerStateInbox, peerManager);
         getServer().getPluginManager().registerEvents(boundaryTransferListener, this);
-        log.info("Event listeners registered (world events, seam corridor, boundary handover enabled={} mode={} owns={} boundaryX={} haloWidth={} peer-server={})",
-            transferEnabled, mode, transferOwnsWest ? "west" : "east", transferBoundaryX, transferHaloWidth, peerServer);
+        log.info("Event listeners registered (world events, seam corridor, boundary handover enabled={} mode={} owns={} boundaryX={} buffer={} haloWidth={} peer-server={})",
+            transferEnabled, mode, transferOwnsWest ? "west" : "east", transferBoundaryX, buffer, transferHaloWidth, peerServer);
 
-        // Cosmetic seam wall so the boundary is locatable in-world.
+        // Cosmetic markers at the underlap band edges so the crossing is locatable in-world.
         boolean showSeam = getConfig().getBoolean("transfer.show-seam", true);
         getServer().getPluginManager().registerEvents(
-            new SeamVisualizer(this, transferEnabled && showSeam, transferBoundaryX), this);
+            new SeamVisualizer(this, transferEnabled && showSeam, transferBoundaryX, buffer), this);
 
         setupSpawn();
 

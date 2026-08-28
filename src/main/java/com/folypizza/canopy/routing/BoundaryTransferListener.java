@@ -185,6 +185,13 @@ public class BoundaryTransferListener implements Listener {
                 plugin.getServer().getAsyncScheduler().runNow(plugin,
                     t -> peerManager.pushPlayerState(uuid, blob));
             }
+            // If the switch silently fails (e.g. peer went down between the health check and
+            // now), clear the transferring flag after a short delay so the player can retry —
+            // by then the health poll will have flipped and they'll be denied + knocked back.
+            final UUID uid = p.getUniqueId();
+            plugin.getServer().getAsyncScheduler().runDelayed(plugin,
+                t -> transferring.remove(uid), 4, java.util.concurrent.TimeUnit.SECONDS);
+
             if ("proxy".equalsIgnoreCase(mode)) {
                 // Ask the CanopySwitch Velocity plugin to move this player to the peer backend
                 // via Velocity's native connection request (config-phase switch, no login screen).
@@ -206,7 +213,8 @@ public class BoundaryTransferListener implements Listener {
 
     /** Refuse a crossing to a down shard: knock the player back and show a maintenance notice. */
     private void denyCrossing(Player p, Location to) {
-        double backX = ownsWest ? (boundaryX - 2) : (boundaryX + 2);
+        // Land 2 blocks inside our accessible zone (past the buffer band), never in the band.
+        double backX = ownsWest ? (boundaryX - buffer - 2) : (boundaryX + buffer + 2);
         Location back = new Location(p.getWorld(), backX, to.getY(), to.getZ(), to.getYaw(), to.getPitch());
         org.bukkit.util.Vector kb = new org.bukkit.util.Vector(ownsWest ? -0.6 : 0.6, 0.3, 0);
         p.teleportAsync(back).thenAccept(ok ->
