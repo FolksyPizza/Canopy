@@ -47,6 +47,9 @@ public class PeerManager {
     private final ConcurrentHashMap<Long, Long> peerWorldTimes = new ConcurrentHashMap<>();
     private static final long PEER_TIMEOUT_MS = 15_000;
     private volatile long lastPeerContactMs = 0;
+    // Set by each poll: true after a successful health RPC, false after a failed one, so a
+    // downed peer is detected within one poll interval rather than only after the timeout.
+    private volatile boolean peerReachable = false;
 
     private final ConcurrentHashMap<String, ManagedChannel> channels = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, TileVersionClient> tileClients = new ConcurrentHashMap<>();
@@ -112,7 +115,7 @@ public class PeerManager {
             if (resp.getEditsCount() == 0) return;
             haloLastSeq.put(addr, resp.getMaxSeq());
             applyHaloEdits(resp.getEditsList());
-            log.debug("[halo] mirrored {} edits from peer strip [{}..{}]", resp.getEditsCount(), minX, maxX);
+            log.info("[halo] mirrored {} edits from peer strip [{}..{}]", resp.getEditsCount(), minX, maxX);
         } catch (Exception e) {
             log.warn("[halo] pull from {} failed: {}", addr, e.getMessage());
         }
@@ -211,6 +214,7 @@ public class PeerManager {
                 peerPlayers.put(peerId, plist);
                 peerWorldTimes.put(peerId, health.getWorldTime());
                 lastPeerContactMs = System.currentTimeMillis();
+                peerReachable = true;
 
                 log.debug("[peer] {} shard={} tps={} mspt={} players={}",
                     addr, peerId, String.format("%.2f", health.getTps()),
@@ -219,14 +223,18 @@ public class PeerManager {
                 // Mirror the peer's near-seam block edits into our local halo strip.
                 pullHaloEdits(addr, channel);
             } catch (Exception e) {
+                peerReachable = false;
                 log.warn("[peer] health poll to {} failed: {}", addr, e.getMessage());
             }
         }
     }
 
-    /** True if we have heard from at least one peer recently (destination reachable). */
+    /**
+     * True if the destination peer is reachable: the most recent poll succeeded and it was
+     * recent. A downed peer flips this false on the next poll (~one poll interval).
+     */
     public boolean isPeerHealthy() {
-        return System.currentTimeMillis() - lastPeerContactMs < PEER_TIMEOUT_MS;
+        return peerReachable && (System.currentTimeMillis() - lastPeerContactMs < PEER_TIMEOUT_MS);
     }
 
     /**

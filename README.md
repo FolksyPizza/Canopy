@@ -25,6 +25,9 @@ Status: experimental prototype. APIs and on-disk formats are not stable.
   (position, gamemode, flight, vitals, XP, inventory, ender chest) and pushes it to the
   destination shard over gRPC, then asks the proxy to switch the player. The destination
   applies the state on join.
+- **Unavailable peer.** If the destination shard is not reachable, the crossing is
+  refused: the player is kept in their region with a short notice, rather than dropped
+  into a dead connection.
 - **Seam mirroring.** Each shard records block edits in a strip next to the seam; the peer
   pulls them over gRPC and mirrors them into its own copy, so recent changes on the far
   side are visible from across the seam. Base terrain matches because both shards share a

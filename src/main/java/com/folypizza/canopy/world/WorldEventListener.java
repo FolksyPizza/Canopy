@@ -77,7 +77,10 @@ public class WorldEventListener implements Listener {
     }
 
     private void recordEdit(org.bukkit.block.Block b, String blockData) {
-        if (inMyStrip(b.getX())) {
+        boolean in = inMyStrip(b.getX());
+        log.info("[halo] edit x={} y={} z={} data={} inStrip={} ({})",
+            b.getX(), b.getY(), b.getZ(), blockData, in, ownsWest ? "west" : "east");
+        if (in) {
             haloEditStore.record(b.getX(), b.getY(), b.getZ(), blockData);
         }
     }

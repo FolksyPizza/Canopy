@@ -44,7 +44,7 @@ transfer:
   enabled: false
   boundary-x: 0        # X coordinate of the seam between the two shards
   owns: west           # "west" owns x < (boundary-x - buffer); "east" owns x >= (boundary-x + buffer)
-  buffer: 2            # half-width of the inaccessible "underlap" band; 2 = a 4-block band
+  buffer: 4            # half-width of the inaccessible "underlap" band; 4 = an 8-block band
   # mode: "proxy" switches the player via a Velocity proxy (reconfigure screen, no
   # login screen); "transfer" uses the vanilla transfer packet (full reconnect).
   mode: proxy
