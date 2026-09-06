@@ -7,9 +7,9 @@ description: Distributed Folia shard coordination
 load-order: AFTER
 folia-supported: true
 
-# Configuration reference (see config.yml):
-#   shard.num-regions   — number of Folia regions in this JVM
-#   shard.world-border-x — world border extent (blocks) on X; 0 = unbounded
-#   shard.world-border-z — world border extent (blocks) on Z; 0 = unbounded
-# The world-border values drive how the partition map is divided into shards and
-# can be adjusted live from the WebUI dashboard (Partition Settings panel).
+commands:
+  region:
+    description: Show the current region, list shards, or move between regions.
+    usage: /region [list|go]
+
+# Configuration is documented in config.yml.
