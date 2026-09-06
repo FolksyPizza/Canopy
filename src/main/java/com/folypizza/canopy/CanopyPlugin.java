@@ -312,6 +312,20 @@ public class CanopyPlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(
             new SeamVisualizer(this, transferEnabled && showSeam, transferBoundaryX, buffer), this);
 
+        // Keep non-player entities, items, and pearl teleports from crossing the seam.
+        getServer().getPluginManager().registerEvents(
+            new com.folypizza.canopy.routing.SeamContainmentListener(
+                transferEnabled, transferBoundaryX, buffer, transferOwnsWest), this);
+
+        // /region command (info, list, admin move).
+        var regionCmd = new com.folypizza.canopy.routing.RegionCommand(
+            shardId, transferBoundaryX, buffer, transferOwnsWest, shardRegistry, boundaryTransferListener);
+        if (getCommand("region") != null) {
+            getCommand("region").setExecutor(regionCmd);
+        } else {
+            log.warn("'region' command not declared in plugin.yml");
+        }
+
         setupSpawn();
 
         tileTransferService.start();

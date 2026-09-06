@@ -173,6 +173,26 @@ public class BoundaryTransferListener implements Listener {
         double landX = buffer > 0 ? landingX() : to.getX();
         Location landing = new Location(p.getWorld(), landX, to.getY(), to.getZ(),
             to.getYaw(), to.getPitch());
+        doHandover(p, landing);
+    }
+
+    /**
+     * Force a handover to the peer shard regardless of position (used by the admin command).
+     * Returns false if disabled, no peer is reachable, or the player is already transferring.
+     */
+    public boolean forceHandover(Player p) {
+        if (!enabled) return false;
+        if (peerManager != null && !peerManager.isPeerHealthy()) return false;
+        if (!transferring.add(p.getUniqueId())) return false;
+        Location cur = p.getLocation();
+        Location landing = new Location(p.getWorld(), landingX(), cur.getY(), cur.getZ(),
+            cur.getYaw(), cur.getPitch());
+        doHandover(p, landing);
+        return true;
+    }
+
+    /** Serialize + push state, then switch the player to the peer shard. */
+    private void doHandover(Player p, Location landing) {
         byte[] payload = (landing.getX() + ";" + landing.getY() + ";" + landing.getZ() + ";"
             + landing.getYaw() + ";" + landing.getPitch()).getBytes(StandardCharsets.UTF_8);
         try {
@@ -197,12 +217,10 @@ public class BoundaryTransferListener implements Listener {
                 // via Velocity's native connection request (config-phase switch, no login screen).
                 com.google.common.io.ByteArrayDataOutput out = com.google.common.io.ByteStreams.newDataOutput();
                 out.writeUTF(peerServer);
-                log.info("Player {} crossed boundary x={} -> proxy switch to server '{}'",
-                    p.getName(), (int) to.getX(), peerServer);
+                log.info("Handing {} to server '{}'", p.getName(), peerServer);
                 p.sendPluginMessage(plugin, SWITCH_CHANNEL, out.toByteArray());
             } else {
-                log.info("Player {} crossed boundary x={} -> transfer packet to {}:{}",
-                    p.getName(), (int) to.getX(), peerHost, peerPort);
+                log.info("Handing {} via transfer packet to {}:{}", p.getName(), peerHost, peerPort);
                 p.transfer(peerHost, peerPort);
             }
         } catch (Exception ex) {
