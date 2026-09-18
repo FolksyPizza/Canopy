@@ -2,6 +2,7 @@ package com.folypizza.canopy.routing;
 
 import org.bukkit.Location;
 import org.bukkit.NamespacedKey;
+import org.bukkit.Sound;
 import org.bukkit.World;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -52,6 +53,10 @@ public class BoundaryTransferListener implements Listener {
     private final com.folypizza.canopy.grpc.PeerManager peerManager;
 
     private static final long SETTLE_MS = 3000;
+    // How far before the border to initiate the switch when the player is walking toward the peer,
+    // so the handover (which takes a moment to complete) lands them at the seam rather than well
+    // past it. Applied only in the direction of travel, so walking along the seam never triggers.
+    private static final double CROSS_LEAD = 0.5;
 
     // Players mid-transfer, so repeated move events don't fire transfer() twice.
     private final Set<UUID> transferring = ConcurrentHashMap.newKeySet();
@@ -94,6 +99,15 @@ public class BoundaryTransferListener implements Listener {
         return ownsWest ? (boundaryX + buffer + 0.5) : (boundaryX - buffer - 0.5);
     }
 
+    /**
+     * Clamp a live crossing X so it always lands on the peer's owned side, even when the switch was
+     * initiated a hair early (the {@link #CROSS_LEAD} lead). With buffer 0 this keeps continuous 1:1
+     * coordinates once the player has genuinely crossed, and pins an early initiation to the seam.
+     */
+    private double clampLandingX(double x) {
+        return ownsWest ? Math.max(x, boundaryX) : Math.min(x, boundaryX - 0.001);
+    }
+
     @EventHandler(priority = EventPriority.MONITOR)
     public void onJoin(PlayerJoinEvent e) {
         if (!enabled) return;
@@ -111,6 +125,9 @@ public class BoundaryTransferListener implements Listener {
             p.getScheduler().run(plugin, t -> {
                 Location loc = com.folypizza.canopy.migration.PlayerStateCodec.apply(p, blob, p.getWorld());
                 if (loc != null) p.teleportAsync(loc);
+                // Pearl teleport sound, played on arrival so it's guaranteed to reach the client
+                // after the server switch (a source-side sound can be dropped as the link swaps).
+                p.playSound(p.getLocation(), Sound.ENTITY_ENDERMAN_TELEPORT, 1.0f, 1.0f);
                 log.info("Applied full player state for {} (arrived from peer)", p.getName());
             }, null);
             return;
@@ -133,6 +150,7 @@ public class BoundaryTransferListener implements Listener {
                     parts.length > 3 ? Float.parseFloat(parts[3]) : 0f,
                     parts.length > 4 ? Float.parseFloat(parts[4]) : 0f);
                 p.teleportAsync(loc);
+                p.playSound(loc, Sound.ENTITY_ENDERMAN_TELEPORT, 1.0f, 1.0f);
                 p.storeCookie(cookieKey, new byte[0]);
                 log.info("Player {} restored to {},{},{} (cookie fallback)", p.getName(),
                     (int) loc.getX(), (int) loc.getY(), (int) loc.getZ());
@@ -145,21 +163,29 @@ public class BoundaryTransferListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onMove(PlayerMoveEvent e) {
         if (!enabled) return;
-        Location from = e.getFrom();
         Location to = e.getTo();
         if (to == null) return;
-        // Only evaluate when the player actually changes block X (cheap + avoids spam).
-        if (from.getBlockX() == to.getBlockX()) return;
 
         Player p = e.getPlayer();
-        if (ownsX(to.getX())) return;              // still on our side
+        // Fire the instant the player crosses toward the peer. A small lead is applied only when
+        // they are actually moving toward the peer, so the switch — which takes a moment to
+        // complete — lands them at the seam rather than well past it. Walking parallel to (or away
+        // from) the seam uses no lead, so nobody lingering near the border is yanked across.
+        Location from = e.getFrom();
+        double dx = to.getX() - from.getX();
+        double lead = (ownsWest ? dx > 0 : dx < 0) ? CROSS_LEAD : 0.0;
+        boolean crossed = ownsWest
+            ? (to.getX() >= boundaryX - buffer - lead)
+            : (to.getX() < boundaryX + buffer + lead);
+        if (!crossed) return;                       // still on our side
         // Suppress transfer during the post-join settling window (avoids spawn-jitter loops
         // while a cookie-restore teleport is still landing the player on our side).
         Long jt = joinedAt.get(p.getUniqueId());
         if (jt != null && System.currentTimeMillis() - jt < SETTLE_MS) return;
 
-        // If the destination shard is unreachable, refuse the crossing: knock the player
-        // back into our region and tell them the region is under maintenance.
+        // If the destination shard is unreachable, refuse the crossing: knock the player back
+        // into our region and tell them the region is under maintenance. Only this case holds
+        // the player; a healthy crossing lets them keep walking while the switch runs.
         if (peerManager != null && !peerManager.isPeerHealthy()) {
             denyCrossing(p, to);
             return;
@@ -170,7 +196,7 @@ public class BoundaryTransferListener implements Listener {
         // Land at the exact crossing position on the peer (buffer 0 = 1:1 continuous
         // coordinates). With a non-zero buffer the player hops the inaccessible band and
         // lands at a fixed far-edge X (which necessarily offsets X by the buffer width).
-        double landX = buffer > 0 ? landingX() : to.getX();
+        double landX = buffer > 0 ? landingX() : clampLandingX(to.getX());
         Location landing = new Location(p.getWorld(), landX, to.getY(), to.getZ(),
             to.getYaw(), to.getPitch());
         doHandover(p, landing);
@@ -193,6 +219,8 @@ public class BoundaryTransferListener implements Listener {
 
     /** Serialize + push state, then switch the player to the peer shard. */
     private void doHandover(Player p, Location landing) {
+        // The teleport sound is played on the destination when state is applied (see tryApplyState),
+        // where it reliably reaches the client after the server switch.
         byte[] payload = (landing.getX() + ";" + landing.getY() + ";" + landing.getZ() + ";"
             + landing.getYaw() + ";" + landing.getPitch()).getBytes(StandardCharsets.UTF_8);
         try {
@@ -235,6 +263,8 @@ public class BoundaryTransferListener implements Listener {
         double backX = ownsWest ? (boundaryX - buffer - 2) : (boundaryX + buffer + 2);
         Location back = new Location(p.getWorld(), backX, to.getY(), to.getZ(), to.getYaw(), to.getPitch());
         org.bukkit.util.Vector kb = new org.bukkit.util.Vector(ownsWest ? -0.6 : 0.6, 0.3, 0);
+        // Same pearl cue as a real crossing, so a blocked attempt still feels like a hop.
+        p.playSound(p.getLocation(), Sound.ENTITY_ENDER_PEARL_THROW, 1.0f, 0.7f);
         p.teleportAsync(back).thenAccept(ok ->
             p.getScheduler().run(plugin, t -> p.setVelocity(kb), null));
 

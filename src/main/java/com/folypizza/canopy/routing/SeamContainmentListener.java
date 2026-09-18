@@ -6,6 +6,8 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.inventory.InventoryMoveItemEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.inventory.Inventory;
@@ -23,12 +25,15 @@ import org.bukkit.inventory.Inventory;
  */
 public class SeamContainmentListener implements Listener {
 
+    private final org.bukkit.plugin.java.JavaPlugin plugin;
     private final boolean enabled;
     private final double boundaryX;
     private final int buffer;
     private final boolean ownsWest;
 
-    public SeamContainmentListener(boolean enabled, double boundaryX, int buffer, boolean ownsWest) {
+    public SeamContainmentListener(org.bukkit.plugin.java.JavaPlugin plugin, boolean enabled,
+                                   double boundaryX, int buffer, boolean ownsWest) {
+        this.plugin = plugin;
         this.enabled = enabled;
         this.boundaryX = boundaryX;
         this.buffer = Math.max(0, buffer);
@@ -43,15 +48,33 @@ public class SeamContainmentListener implements Listener {
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void onTeleport(PlayerTeleportEvent e) {
         if (!enabled || e.getTo() == null) return;
-        PlayerTeleportEvent.TeleportCause cause = e.getCause();
-        if (cause != PlayerTeleportEvent.TeleportCause.ENDER_PEARL
-            && cause != PlayerTeleportEvent.TeleportCause.CHORUS_FRUIT) {
-            return;
-        }
+        // Never allow a teleport to land past our border (pearl, chorus, or otherwise) — the
+        // player can only leave via a handover, which lands them on the owned side. Cause is
+        // not checked because it varies by build; the destination test is authoritative.
         if (!owns(e.getTo().getX())) {
-            // The pearl/chorus would land off our side — absorb it, no teleport.
             e.setCancelled(true);
         }
+    }
+
+    /**
+     * Contain thrown projectiles (ender pearls especially) at the seam: the teleport-cancel above
+     * is not reliable for pearls on Folia, so we watch the pearl itself and remove it the instant it
+     * crosses off our side, before it can teleport the thrower past the border.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onProjectileLaunch(org.bukkit.event.entity.ProjectileLaunchEvent e) {
+        if (!enabled) return;
+        if (!(e.getEntity() instanceof org.bukkit.entity.EnderPearl pearl)) return;
+        pearl.getScheduler().runAtFixedRate(plugin, task -> {
+            if (!pearl.isValid() || pearl.isDead()) {
+                task.cancel();
+                return;
+            }
+            if (!owns(pearl.getLocation().getX())) {
+                pearl.remove();  // stops the pending teleport — the pearl fizzles at the border
+                task.cancel();
+            }
+        }, () -> { }, 1L, 1L);
     }
 
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
@@ -60,6 +83,23 @@ public class SeamContainmentListener implements Listener {
         if (e.getEntity() instanceof Player) return; // players use the handover path
         if (!owns(e.getTo().getX())) {
             // Non-player entity trying to enter the buffer band / peer side — stop it.
+            e.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onBlockPlace(BlockPlaceEvent e) {
+        if (!enabled) return;
+        if (!owns(e.getBlock().getX())) {
+            // No building past the border this shard owns (the buffer band or peer territory).
+            e.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onBlockBreak(BlockBreakEvent e) {
+        if (!enabled) return;
+        if (!owns(e.getBlock().getX())) {
             e.setCancelled(true);
         }
     }

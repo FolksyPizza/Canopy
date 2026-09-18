@@ -24,7 +24,7 @@ import java.io.DataOutputStream;
  */
 public final class PlayerStateCodec {
     private static final Logger log = LoggerFactory.getLogger(PlayerStateCodec.class);
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
 
     private PlayerStateCodec() {}
 
@@ -48,6 +48,7 @@ public final class PlayerStateCodec {
             out.writeUTF(p.getGameMode().name());
             out.writeBoolean(p.getAllowFlight());
             out.writeBoolean(p.isFlying());
+            out.writeBoolean(p.isGliding());   // elytra state (v2)
             out.writeDouble(p.getHealth());
             out.writeInt(p.getFoodLevel());
             out.writeFloat(p.getSaturation());
@@ -85,6 +86,7 @@ public final class PlayerStateCodec {
             String gm = in.readUTF();
             boolean allowFlight = in.readBoolean();
             boolean flying = in.readBoolean();
+            boolean gliding = in.readBoolean();
             double health = in.readDouble();
             int food = in.readInt();
             float sat = in.readFloat();
@@ -105,6 +107,9 @@ public final class PlayerStateCodec {
             try { p.setGameMode(GameMode.valueOf(gm)); } catch (IllegalArgumentException ignored) {}
             p.setAllowFlight(allowFlight);
             p.setFlying(flying && allowFlight);
+            // Reconcile the elytra pose so it doesn't stick after a no-respawn switch: the client
+            // keeps its last pose across the swap, so we force the correct gliding state here.
+            p.setGliding(gliding);
             try { if (health > 0) p.setHealth(Math.min(health, p.getMaxHealth())); } catch (Exception ignored) {}
             p.setFoodLevel(food);
             p.setSaturation(sat);

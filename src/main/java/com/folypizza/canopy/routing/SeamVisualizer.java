@@ -1,5 +1,6 @@
 package com.folypizza.canopy.routing;
 
+import org.bukkit.Color;
 import org.bukkit.Location;
 import org.bukkit.Particle;
 import org.bukkit.World;
@@ -17,8 +18,13 @@ import org.bukkit.event.player.PlayerJoinEvent;
  * cross-region access occurs. Purely cosmetic and client-side.
  */
 public class SeamVisualizer implements Listener {
-    private static final int RANGE_BLOCKS = 6;    // only show the marker when very close
-    private static final long PERIOD_TICKS = 10;  // redraw cadence
+    private static final int RANGE_BLOCKS = 12;   // show the wall within this distance
+    private static final int HALF_WIDTH = 8;      // z extent to each side of the player
+    private static final long PERIOD_TICKS = 8;   // redraw cadence
+    private static final Particle.DustOptions RED =
+        new Particle.DustOptions(Color.fromRGB(255, 45, 45), 1.0f);
+    private static final Particle.DustOptions GREEN =
+        new Particle.DustOptions(Color.fromRGB(60, 235, 70), 1.0f);
 
     private final org.bukkit.plugin.java.JavaPlugin plugin;
     private final boolean enabled;
@@ -36,7 +42,7 @@ public class SeamVisualizer implements Listener {
     public void onJoin(PlayerJoinEvent e) {
         if (!enabled) return;
         Player p = e.getPlayer();
-        p.getScheduler().runAtFixedRate(plugin, task -> draw(p), null, 20L, PERIOD_TICKS);
+        p.getScheduler().runAtFixedRate(plugin, task -> draw(p), () -> { }, 20L, PERIOD_TICKS);
     }
 
     private void draw(Player p) {
@@ -44,17 +50,16 @@ public class SeamVisualizer implements Listener {
         Location loc = p.getLocation();
         if (Math.abs(loc.getX() - boundaryX) > RANGE_BLOCKS) return;
         World w = p.getWorld();
-        // Draw the two edges of the inaccessible underlap band (x = boundary ± buffer) as
-        // faint columns aligned to the player's z, so the marker sits exactly where the
-        // crossing happens. With buffer 0 this collapses to a single line at the boundary.
-        double z = loc.getBlockZ() + 0.5;
+        // A wall of red/green dust on the seam plane (x = boundary), spanning a block or two
+        // to each side of the player in z and a few blocks in height, so the border reads as
+        // a coloured curtain. Colours alternate per cell for the mixed look.
+        int cz = loc.getBlockZ();
         int py = loc.getBlockY();
-        double westEdge = boundaryX - buffer;
-        double eastEdge = boundaryX + buffer;
-        for (int y = py; y <= py + 2; y++) {
-            p.spawnParticle(Particle.END_ROD, new Location(w, westEdge, y + 0.5, z), 1, 0, 0, 0, 0);
-            if (buffer > 0) {
-                p.spawnParticle(Particle.END_ROD, new Location(w, eastEdge, y + 0.5, z), 1, 0, 0, 0, 0);
+        for (int z = cz - HALF_WIDTH; z <= cz + HALF_WIDTH; z++) {
+            for (int y = py - 1; y <= py + 5; y++) {
+                Particle.DustOptions colour = ((z + y) & 1) == 0 ? RED : GREEN;
+                p.spawnParticle(Particle.DUST, new Location(w, boundaryX, y + 0.5, z + 0.5),
+                    1, 0, 0, 0, 0, colour);
             }
         }
     }

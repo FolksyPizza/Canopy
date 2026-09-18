@@ -315,7 +315,7 @@ public class CanopyPlugin extends JavaPlugin {
         // Keep non-player entities, items, and pearl teleports from crossing the seam.
         getServer().getPluginManager().registerEvents(
             new com.folypizza.canopy.routing.SeamContainmentListener(
-                transferEnabled, transferBoundaryX, buffer, transferOwnsWest), this);
+                this, transferEnabled, transferBoundaryX, buffer, transferOwnsWest), this);
 
         // /region command (info, list, admin move).
         var regionCmd = new com.folypizza.canopy.routing.RegionCommand(
