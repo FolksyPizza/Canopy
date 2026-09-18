@@ -53,10 +53,10 @@ public class BoundaryTransferListener implements Listener {
     private final com.folypizza.canopy.grpc.PeerManager peerManager;
 
     private static final long SETTLE_MS = 3000;
-    // How far before the border to initiate the switch when the player is walking toward the peer,
-    // so the handover (which takes a moment to complete) lands them at the seam rather than well
-    // past it. Applied only in the direction of travel, so walking along the seam never triggers.
-    private static final double CROSS_LEAD = 0.5;
+    // Lead distance before the border to initiate the switch when walking toward the peer. Kept at
+    // zero so the crossing position and look direction are captured at the true seam crossing and
+    // preserved exactly on arrival; a non-zero lead would capture (and land) a fraction early.
+    private static final double CROSS_LEAD = 0.0;
 
     // Players mid-transfer, so repeated move events don't fire transfer() twice.
     private final Set<UUID> transferring = ConcurrentHashMap.newKeySet();
