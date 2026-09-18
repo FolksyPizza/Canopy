@@ -35,9 +35,9 @@ point on the far edge.
 **Handover.** When a player crosses toward the peer, the shard serialises their state —
 position, game mode, flight, elytra, vitals, experience, inventory, armour, off-hand, and
 ender chest — pushes it to the destination shard over gRPC, and asks the gateway to switch
-the connection. The destination restores the state as the player arrives. Initiation is
-nudged slightly earlier when the player is walking toward the seam, so the switch *lands*
-at the border rather than a step past it.
+the connection. Position and view direction are captured at the exact moment of crossing and
+restored as the player arrives, so they resume from where — and where they were looking —
+when they stepped over the seam.
 
 **Unavailable peer.** If the destination shard is unreachable the crossing is refused: the
 player is knocked back into their own region with a short maintenance notice instead of
@@ -51,6 +51,11 @@ world seed.
 **Coordination.** Shards discover peers from configuration, poll each other's health, and
 serve tile-version and migration data over gRPC. Redis-backed lease coordination is
 optional; an in-memory implementation is used otherwise.
+
+**World time and weather.** Day/night and storms are kept in step across the seam. Each
+shard reports its overworld time and weather in its health response; the shard with the
+lowest id is the authority, and the others follow it, so the sky and weather match on both
+sides of the boundary.
 
 ## The Canopy Session Gateway
 
@@ -103,6 +108,20 @@ A minimal cluster is two Paper/Folia backends behind one Session Gateway.
    `-Dcanopy.seamless=true -Dcanopy.noRespawn=true`.
 
 Every option is documented inline in `src/main/resources/config.yml`.
+
+### World setup
+
+For the seam to read as one world, both backends must generate the **same terrain**:
+
+- Give every backend the **same `level-seed`** (and the same generation settings). With a
+  shared seed the base terrain and vanilla features are deterministic, so the two sides line
+  up at the boundary.
+- **Pre-generate the shared area** on both backends before players arrive, using the same
+  region and order (a pre-generator such as Chunky, centred on the seam with a matching
+  radius). On-demand generation at the seam can otherwise place edge features — trees
+  spanning a chunk border, for instance — differently depending on load order; pre-generating
+  both sides identically avoids that.
+- Set a matching world border on both backends so the owned area is bounded the same way.
 
 ## In-game administration
 

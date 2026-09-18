@@ -22,3 +22,22 @@ Thumbs.db
 
 # Logs
 *.log
+
+# AI assistant / agent working files (never published)
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+AGENT_INSTRUCTIONS.md
+CLAUDE_INSTRUCTIONS.md
+.claude/
+.cursor/
+.cursorrules
+.aider*
+.github/copilot-instructions.md
+
+# Local / private
+*.local
+.env
+.env.*
+secrets.*
+*.secret
