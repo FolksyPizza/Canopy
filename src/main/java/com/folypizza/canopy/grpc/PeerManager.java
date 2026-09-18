@@ -45,6 +45,7 @@ public class PeerManager {
     private final ConcurrentHashMap<String, Long> haloLastSeq = new ConcurrentHashMap<>();
     // Latest world time reported by each peer (peer shard id -> full time), for time sync.
     private final ConcurrentHashMap<Long, Long> peerWorldTimes = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, Integer> peerWeather = new ConcurrentHashMap<>();
     private static final long PEER_TIMEOUT_MS = 15_000;
     private volatile long lastPeerContactMs = 0;
     // Set by each poll: true after a successful health RPC, false after a failed one, so a
@@ -213,6 +214,7 @@ public class PeerManager {
                 }
                 peerPlayers.put(peerId, plist);
                 peerWorldTimes.put(peerId, health.getWorldTime());
+                peerWeather.put(peerId, health.getWeatherBits());
                 lastPeerContactMs = System.currentTimeMillis();
                 peerReachable = true;
 
@@ -250,6 +252,23 @@ public class PeerManager {
             }
         }
         return bestTime;
+    }
+
+    /**
+     * Weather bitfield (bit0 = storm/rain, bit1 = thundering) of the authority — the reachable
+     * peer with the lowest shard id, when that id is below ours — or -1 if this shard is the
+     * authority / no peer is known. Mirrors {@link #getAuthorityWorldTime(long)}.
+     */
+    public int getAuthorityWeatherBits(long localShardId) {
+        long bestId = Long.MAX_VALUE;
+        int bestWeather = -1;
+        for (var e : peerWeather.entrySet()) {
+            if (e.getKey() < localShardId && e.getKey() < bestId) {
+                bestId = e.getKey();
+                bestWeather = e.getValue();
+            }
+        }
+        return bestWeather;
     }
 
     public int getConnectedPeerCount() {

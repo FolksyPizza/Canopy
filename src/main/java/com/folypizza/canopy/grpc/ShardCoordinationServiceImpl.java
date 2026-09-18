@@ -33,14 +33,17 @@ public class ShardCoordinationServiceImpl extends ShardCoordinationServiceGrpc.S
     private final com.folypizza.canopy.routing.PlayerStateInbox playerStateInbox;
     private final com.folypizza.canopy.halo.HaloEditStore haloEditStore;
     private final java.util.function.LongSupplier worldTimeSupplier;
+    private final java.util.function.IntSupplier weatherSupplier;
 
     public ShardCoordinationServiceImpl(long shardId, String host, MetricsCollector metrics,
                                         EntityTracker entityTracker, PlayerRoutingProxy routing,
                                         PartitionMap partitionMap, TileVersionServiceImpl tileVersionService,
                                         com.folypizza.canopy.routing.PlayerStateInbox playerStateInbox,
                                         com.folypizza.canopy.halo.HaloEditStore haloEditStore,
-                                        java.util.function.LongSupplier worldTimeSupplier) {
+                                        java.util.function.LongSupplier worldTimeSupplier,
+                                        java.util.function.IntSupplier weatherSupplier) {
         this.worldTimeSupplier = worldTimeSupplier;
+        this.weatherSupplier = weatherSupplier;
         this.shardId = shardId;
         this.host = host;
         this.metrics = metrics;
@@ -76,7 +79,8 @@ public class ShardCoordinationServiceImpl extends ShardCoordinationServiceGrpc.S
             .setEntityCount(entityTracker.getTrackedCount())
             .setFluidTicksInLastPhase(0)
             .setChunkIoPending(0)
-            .setWorldTime(worldTimeSupplier != null ? worldTimeSupplier.getAsLong() : 0L);
+            .setWorldTime(worldTimeSupplier != null ? worldTimeSupplier.getAsLong() : 0L)
+            .setWeatherBits(weatherSupplier != null ? weatherSupplier.getAsInt() : 0);
         for (var st : entityTracker.getEntityStates().values()) {
             if (!"player".equals(st.entityType())) continue;
             health.addPlayers(com.folypizza.canopy.proto.PlayerPos.newBuilder()

@@ -80,6 +80,9 @@ public class CanopyPlugin extends JavaPlugin {
     private int transferHaloWidth;
     // Cached local overworld time (updated on the global region thread) for cross-shard sync.
     private final java.util.concurrent.atomic.AtomicLong localWorldTime = new java.util.concurrent.atomic.AtomicLong(0);
+    // Local overworld weather as a bitfield (bit0 = storm/rain, bit1 = thundering), refreshed on
+    // the global region thread and served to peers for cross-shard weather sync.
+    private final java.util.concurrent.atomic.AtomicInteger localWeatherBits = new java.util.concurrent.atomic.AtomicInteger(0);
 
     // Optional Redis-backed coordination (only when lease.redis-url is configured).
     private RedisClient redisClient;
@@ -256,7 +259,8 @@ public class CanopyPlugin extends JavaPlugin {
         // The gRPC-exposed coordination + migration services share the plugin's live state.
         ShardCoordinationServiceImpl coordinationService = new ShardCoordinationServiceImpl(
             shardId, getHostAddress(), metricsCollector, entityTracker, routingProxy,
-            partitionMap, tileVersionService, playerStateInbox, haloEditStore, localWorldTime::get);
+            partitionMap, tileVersionService, playerStateInbox, haloEditStore, localWorldTime::get,
+            localWeatherBits::get);
         MigrationServiceImpl migrationGrpc = new MigrationServiceImpl(shardId, migrationService, this);
 
         grpcServer = new GrpcServer(grpcPort, tileVersionService, coordinationService, migrationGrpc);
@@ -341,16 +345,30 @@ public class CanopyPlugin extends JavaPlugin {
 
         peerManager.start();
 
-        // Cross-shard world-time sync: the lowest shard id is the authority; other shards
-        // follow it so day/night stays aligned across the seam. Runs on the global region
-        // thread, which owns world time.
+        // Cross-shard world-time and weather sync: the lowest shard id is the authority; other
+        // shards follow it so day/night and storms stay aligned across the seam. Runs on the
+        // global region thread, which owns world time and weather.
         getServer().getGlobalRegionScheduler().runAtFixedRate(this, task -> {
             if (getServer().getWorlds().isEmpty()) return;
             org.bukkit.World w = getServer().getWorlds().get(0);
             localWorldTime.set(w.getFullTime());
+            localWeatherBits.set((w.hasStorm() ? 1 : 0) | (w.isThundering() ? 2 : 0));
+
             long authTime = peerManager != null ? peerManager.getAuthorityWorldTime(shardId) : -1;
             if (authTime >= 0 && Math.abs(authTime - w.getFullTime()) > 20) {
                 w.setFullTime(authTime);
+            }
+
+            int authWeather = peerManager != null ? peerManager.getAuthorityWeatherBits(shardId) : -1;
+            if (authWeather >= 0) {
+                boolean storm = (authWeather & 1) != 0;
+                boolean thunder = (authWeather & 2) != 0;
+                if (w.hasStorm() != storm) w.setStorm(storm);
+                if (w.isThundering() != thunder) w.setThundering(thunder);
+                // Pin the peer's weather so its own timer never drifts between syncs — the
+                // authority is the only thing that changes it.
+                w.setWeatherDuration(Integer.MAX_VALUE);
+                w.setThunderDuration(thunder ? Integer.MAX_VALUE : 0);
             }
         }, 40L, 40L);
 
