@@ -66,6 +66,10 @@ public class BoundaryTransferListener implements Listener {
     private static final long DENY_MSG_MS = 3000;
     private final java.util.Map<UUID, Long> lastDenyMsg = new ConcurrentHashMap<>();
 
+    // Ticks of movement to project the landing forward by, so a crossing lands the player where
+    // their momentum would carry them during the switch rather than pinned to the boundary block.
+    private final int landingLeadTicks;
+
     public BoundaryTransferListener(JavaPlugin plugin, boolean enabled, double boundaryX, int buffer,
                                     boolean ownsWest, String mode, String peerServer,
                                     String peerHost, int peerPort,
@@ -83,6 +87,7 @@ public class BoundaryTransferListener implements Listener {
         this.cookieKey = new NamespacedKey(plugin, "transfer_pos");
         this.inbox = inbox;
         this.peerManager = peerManager;
+        this.landingLeadTicks = Math.max(0, plugin.getConfig().getInt("transfer.landing-lead-ticks", 3));
     }
 
     /**
@@ -193,11 +198,16 @@ public class BoundaryTransferListener implements Listener {
 
         if (!transferring.add(p.getUniqueId())) return; // already transferring
 
-        // Land at the exact crossing position on the peer (buffer 0 = 1:1 continuous
-        // coordinates). With a non-zero buffer the player hops the inaccessible band and
-        // lands at a fixed far-edge X (which necessarily offsets X by the buffer width).
-        double landX = buffer > 0 ? landingX() : clampLandingX(to.getX());
-        Location landing = new Location(p.getWorld(), landX, to.getY(), to.getZ(),
+        // Project the landing forward along the player's movement by a few ticks, so with 1:1
+        // continuous coordinates (buffer 0) they arrive where their momentum would have carried
+        // them during the switch — not pinned to the boundary block. With a non-zero buffer the
+        // player instead hops the inaccessible band to a fixed far-edge X.
+        double dz = to.getZ() - from.getZ();
+        double projX = to.getX() + dx * landingLeadTicks;
+        double projZ = to.getZ() + dz * landingLeadTicks;
+        double landX = buffer > 0 ? landingX() : clampLandingX(projX);
+        double landZ = buffer > 0 ? to.getZ() : projZ;
+        Location landing = new Location(p.getWorld(), landX, to.getY(), landZ,
             to.getYaw(), to.getPitch());
         doHandover(p, landing);
     }

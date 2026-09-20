@@ -52,6 +52,8 @@ All paths are under `proxy/src/main/java/com/velocitypowered/proxy/connection/`.
   backend so a client already in the play phase does not stall the handshake.
 - **`backend/LoginSessionHandler.java`** — for a seamless switch on 1.20.2+, keeps the
   client in the play phase instead of driving it back into configuration.
+- **`protocol/util/PluginMessageUtil.java`** — presents the cluster as "Canopy" in the
+  client's F3 brand line (e.g. `Folia (Canopy)`) instead of the underlying proxy name.
 
 ## Runtime flags
 

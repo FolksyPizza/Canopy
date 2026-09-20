@@ -52,6 +52,11 @@ transfer:
   peer-host: localhost # transfer-packet fallback (transfer mode only)
   peer-port: 25566
   show-seam: true
+  # Ticks of the player's movement to project the landing position forward by on a crossing,
+  # so they arrive where their momentum would carry them during the switch instead of pinned
+  # to the boundary block. Tune to the switch latency: raise it if you land short of where you
+  # were walking, lower it if you overshoot. 0 lands at the exact crossing point.
+  landing-lead-ticks: 3
   # Width (blocks) of the near-seam halo strip mirrored from the peer shard, so edits
   # on the far side are visible before you cross.
   halo-width: 16

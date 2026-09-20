@@ -646,3 +646,18 @@ index 8880233..1ce04e0 100644
    private void doSafeClientServerSwitch(JoinGamePacket joinGame) {
      // Some clients do not behave well with the "fast" respawn sequence. In this case we will use
      // a "safe" respawn sequence that involves sending three packets to the client. They have the
+diff --git a/proxy/src/main/java/com/velocitypowered/proxy/protocol/util/PluginMessageUtil.java b/proxy/src/main/java/com/velocitypowered/proxy/protocol/util/PluginMessageUtil.java
+index 298e74d..b5a4ede 100644
+--- a/proxy/src/main/java/com/velocitypowered/proxy/protocol/util/PluginMessageUtil.java
++++ b/proxy/src/main/java/com/velocitypowered/proxy/protocol/util/PluginMessageUtil.java
+@@ -184,7 +184,9 @@ public final class PluginMessageUtil {
+     checkArgument(isMcBrand(message), "message is not a brand plugin message");
+ 
+     String currentBrand = readBrandMessage(message.content());
+-    String rewrittenBrand = String.format("%s (%s)", currentBrand, version.getName());
++    // Canopy Session Gateway: present the cluster as "Canopy" in the client's F3 brand line
++    // rather than the underlying proxy name.
++    String rewrittenBrand = String.format("%s (Canopy)", currentBrand);
+ 
+     ByteBuf rewrittenBuf = Unpooled.buffer();
+     if (protocolVersion.noLessThan(ProtocolVersion.MINECRAFT_1_8)) {
