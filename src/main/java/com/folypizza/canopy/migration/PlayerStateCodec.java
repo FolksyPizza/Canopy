@@ -24,7 +24,7 @@ import java.io.DataOutputStream;
  */
 public final class PlayerStateCodec {
     private static final Logger log = LoggerFactory.getLogger(PlayerStateCodec.class);
-    private static final int VERSION = 2;
+    private static final int VERSION = 3;
 
     private PlayerStateCodec() {}
 
@@ -45,6 +45,11 @@ public final class PlayerStateCodec {
             out.writeFloat(pos.getYaw());
             out.writeFloat(pos.getPitch());
 
+            org.bukkit.util.Vector vel = p.getVelocity();   // preserve momentum (v3)
+            out.writeDouble(vel.getX());
+            out.writeDouble(vel.getY());
+            out.writeDouble(vel.getZ());
+
             out.writeUTF(p.getGameMode().name());
             out.writeBoolean(p.getAllowFlight());
             out.writeBoolean(p.isFlying());
@@ -54,6 +59,7 @@ public final class PlayerStateCodec {
             out.writeFloat(p.getSaturation());
             out.writeFloat(p.getExp());
             out.writeInt(p.getLevel());
+            out.writeInt(p.getInventory().getHeldItemSlot());   // selected hotbar slot (v3)
 
             PlayerInventory inv = p.getInventory();
             writeItems(out, inv.getStorageContents());
@@ -66,6 +72,23 @@ public final class PlayerStateCodec {
         } catch (Exception e) {
             log.warn("Failed to serialize player {}: {}", p.getName(), e.getMessage());
             return new byte[0];
+        }
+    }
+
+    /**
+     * Reads just the stored velocity from a blob, to be applied after the arrival teleport (a
+     * teleport resets velocity, so it cannot be set inside {@link #apply}). Returns null if absent.
+     */
+    public static org.bukkit.util.Vector readVelocity(byte[] blob) {
+        if (blob == null || blob.length == 0) return null;
+        try {
+            DataInputStream in = new DataInputStream(new ByteArrayInputStream(blob));
+            if (in.readInt() < 3) return null;              // version
+            in.readDouble(); in.readDouble(); in.readDouble(); // x, y, z
+            in.readFloat(); in.readFloat();                    // yaw, pitch
+            return new org.bukkit.util.Vector(in.readDouble(), in.readDouble(), in.readDouble());
+        } catch (Exception e) {
+            return null;
         }
     }
 
@@ -83,6 +106,8 @@ public final class PlayerStateCodec {
             float yaw = in.readFloat(), pitch = in.readFloat();
             Location loc = new Location(world, x, y, z, yaw, pitch);
 
+            in.readDouble(); in.readDouble(); in.readDouble(); // velocity — applied post-teleport, see readVelocity
+
             String gm = in.readUTF();
             boolean allowFlight = in.readBoolean();
             boolean flying = in.readBoolean();
@@ -92,6 +117,7 @@ public final class PlayerStateCodec {
             float sat = in.readFloat();
             float exp = in.readFloat();
             int level = in.readInt();
+            int heldSlot = in.readInt();
 
             ItemStack[] storage = readItems(in);
             ItemStack[] armor = readItems(in);
@@ -112,6 +138,7 @@ public final class PlayerStateCodec {
             p.setGliding(gliding);
             try { if (health > 0) p.setHealth(Math.min(health, p.getMaxHealth())); } catch (Exception ignored) {}
             p.setFoodLevel(food);
+            try { if (heldSlot >= 0 && heldSlot <= 8) inv.setHeldItemSlot(heldSlot); } catch (Exception ignored) {}
             p.setSaturation(sat);
             p.setExp(exp);
             p.setLevel(level);

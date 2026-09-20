@@ -129,7 +129,14 @@ public class BoundaryTransferListener implements Listener {
         if (blob != null) {
             p.getScheduler().run(plugin, t -> {
                 Location loc = com.folypizza.canopy.migration.PlayerStateCodec.apply(p, blob, p.getWorld());
-                if (loc != null) p.teleportAsync(loc);
+                org.bukkit.util.Vector vel = com.folypizza.canopy.migration.PlayerStateCodec.readVelocity(blob);
+                if (loc != null) {
+                    // Restore momentum after the teleport lands (a teleport clears velocity), so the
+                    // player keeps moving through the seam instead of stopping dead on arrival.
+                    p.teleportAsync(loc).thenAccept(ok -> {
+                        if (ok && vel != null) p.getScheduler().run(plugin, tt -> p.setVelocity(vel), null);
+                    });
+                }
                 // Pearl teleport sound, played on arrival so it's guaranteed to reach the client
                 // after the server switch (a source-side sound can be dropped as the link swaps).
                 p.playSound(p.getLocation(), Sound.ENTITY_ENDERMAN_TELEPORT, 1.0f, 1.0f);
@@ -137,12 +144,14 @@ public class BoundaryTransferListener implements Listener {
             }, null);
             return;
         }
-        if (attempt >= 8) { // ~2s elapsed, no blob — fall back to cookie position only
+        if (attempt >= 25) { // ~1s elapsed, no blob — fall back to cookie position only
             applyCookiePosition(p);
             return;
         }
+        // Poll the inbox rapidly so the landing teleport happens the instant the pushed state
+        // arrives, minimising the "held then moved" delay on a crossing.
         plugin.getServer().getAsyncScheduler().runDelayed(plugin,
-            t -> tryApplyState(p, attempt + 1), 250, java.util.concurrent.TimeUnit.MILLISECONDS);
+            t -> tryApplyState(p, attempt + 1), 40, java.util.concurrent.TimeUnit.MILLISECONDS);
     }
 
     private void applyCookiePosition(Player p) {

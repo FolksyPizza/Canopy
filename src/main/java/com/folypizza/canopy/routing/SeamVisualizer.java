@@ -18,13 +18,15 @@ import org.bukkit.event.player.PlayerJoinEvent;
  * cross-region access occurs. Purely cosmetic and client-side.
  */
 public class SeamVisualizer implements Listener {
-    private static final int RANGE_BLOCKS = 12;   // show the wall within this distance
+    private static final int RANGE_BLOCKS = 16;   // show the wall within this distance
     private static final int HALF_WIDTH = 8;      // z extent to each side of the player
-    private static final long PERIOD_TICKS = 8;   // redraw cadence
+    private static final long PERIOD_TICKS = 5;   // redraw cadence
     private static final Particle.DustOptions RED =
-        new Particle.DustOptions(Color.fromRGB(255, 45, 45), 1.0f);
+        new Particle.DustOptions(Color.fromRGB(255, 45, 45), 1.6f);
     private static final Particle.DustOptions GREEN =
-        new Particle.DustOptions(Color.fromRGB(60, 235, 70), 1.0f);
+        new Particle.DustOptions(Color.fromRGB(60, 235, 70), 1.6f);
+
+    private final java.util.Set<java.util.UUID> loggedOnce = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     private final org.bukkit.plugin.java.JavaPlugin plugin;
     private final boolean enabled;
@@ -50,16 +52,21 @@ public class SeamVisualizer implements Listener {
         Location loc = p.getLocation();
         if (Math.abs(loc.getX() - boundaryX) > RANGE_BLOCKS) return;
         World w = p.getWorld();
-        // A wall of red/green dust on the seam plane (x = boundary), spanning a block or two
-        // to each side of the player in z and a few blocks in height, so the border reads as
-        // a coloured curtain. Colours alternate per cell for the mixed look.
-        int cz = loc.getBlockZ();
-        int py = loc.getBlockY();
-        for (int z = cz - HALF_WIDTH; z <= cz + HALF_WIDTH; z++) {
-            for (int y = py - 1; y <= py + 5; y++) {
-                Particle.DustOptions colour = ((z + y) & 1) == 0 ? RED : GREEN;
-                p.spawnParticle(Particle.DUST, new Location(w, boundaryX, y + 0.5, z + 0.5),
-                    1, 0, 0, 0, 0, colour);
+        // A dense wall of red/green dust on the seam plane (x = boundary), a few blocks to each
+        // side of the player in z and a column in height, so the border reads as a coloured
+        // curtain. Two rows per block in z and y for density; colours alternate per cell.
+        double cz = loc.getZ();
+        double py = loc.getY();
+        boolean first = loggedOnce.add(p.getUniqueId());
+        if (first) {
+            org.slf4j.LoggerFactory.getLogger(SeamVisualizer.class)
+                .info("[seam] drawing seam wall for {} at x={} (player x={})",
+                    p.getName(), boundaryX, String.format("%.1f", loc.getX()));
+        }
+        for (double z = cz - HALF_WIDTH; z <= cz + HALF_WIDTH; z += 0.5) {
+            for (double y = py - 1; y <= py + 4; y += 0.5) {
+                Particle.DustOptions colour = (((int) Math.floor(z) + (int) Math.floor(y)) & 1) == 0 ? RED : GREEN;
+                p.spawnParticle(Particle.DUST, new Location(w, boundaryX, y, z), 1, 0, 0, 0, 0, colour);
             }
         }
     }
