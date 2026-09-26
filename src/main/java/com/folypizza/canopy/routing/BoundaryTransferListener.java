@@ -144,14 +144,14 @@ public class BoundaryTransferListener implements Listener {
             }, null);
             return;
         }
-        if (attempt >= 25) { // ~1s elapsed, no blob — fall back to cookie position only
+        if (attempt >= 100) { // ~1s elapsed, no blob — fall back to cookie position only
             applyCookiePosition(p);
             return;
         }
-        // Poll the inbox rapidly so the landing teleport happens the instant the pushed state
-        // arrives, minimising the "held then moved" delay on a crossing.
+        // Poll at 10 ms so state pushed from the source shard is applied promptly after join.
+        // This avoids adding a full 40 ms polling interval to the backend login/configuration time.
         plugin.getServer().getAsyncScheduler().runDelayed(plugin,
-            t -> tryApplyState(p, attempt + 1), 40, java.util.concurrent.TimeUnit.MILLISECONDS);
+            t -> tryApplyState(p, attempt + 1), 10, java.util.concurrent.TimeUnit.MILLISECONDS);
     }
 
     private void applyCookiePosition(Player p) {

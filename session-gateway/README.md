@@ -64,6 +64,10 @@ Both are system properties, off by default; set them on the gateway's Java comma
 | `-Dcanopy.seamless=true` | Skip the client config phase on a switch — removes the reconfiguring screen. |
 | `-Dcanopy.noRespawn=true` | Send no JoinGame/Respawn on a switch — removes the loading-terrain screen. Enables entity-ID translation. Protocol 774 only; other versions fall back to the respawn swap. |
 
+CanopySwitch logs the time from a shard's switch request until the gateway receives the
+destination's JoinGame packet. This includes the new backend connection, login, and config
+phases, and helps distinguish gateway connection time from shard-side state restoration.
+
 ## Notes and limits
 
 - The entity-ID rewriter parses raw buffers defensively: any unexpected buffer is forwarded

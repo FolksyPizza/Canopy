@@ -6,6 +6,7 @@ import com.google.inject.Inject;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.connection.PluginMessageEvent;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
+import com.velocitypowered.api.event.player.ServerConnectedEvent;
 import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
@@ -15,6 +16,8 @@ import com.velocitypowered.api.proxy.server.RegisteredServer;
 import org.slf4j.Logger;
 
 import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Minimal Velocity plugin that performs Canopy's seamless server switch.
@@ -33,6 +36,7 @@ public class CanopySwitchPlugin {
 
     private final ProxyServer server;
     private final Logger logger;
+    private final java.util.Map<UUID, Long> switchStartedNanos = new ConcurrentHashMap<>();
 
     @Inject
     public CanopySwitchPlugin(ProxyServer server, Logger logger) {
@@ -73,7 +77,28 @@ public class CanopySwitchPlugin {
         if (source.getServerInfo().getName().equalsIgnoreCase(target)) {
             return; // already there
         }
+        long started = System.nanoTime();
+        switchStartedNanos.put(player.getUniqueId(), started);
         logger.info("Switching {} -> {}", player.getUsername(), target);
-        player.createConnectionRequest(dest.get()).fireAndForget();
+        player.createConnectionRequest(dest.get()).connectWithIndication().whenComplete((success, error) -> {
+            if (error != null || !Boolean.TRUE.equals(success)) {
+                Long began = switchStartedNanos.remove(player.getUniqueId());
+                if (began != null) {
+                    logger.warn("Switch {} -> {} failed after {} ms{}", player.getUsername(), target,
+                        (System.nanoTime() - began) / 1_000_000L,
+                        error == null ? "" : ": " + error.getMessage());
+                }
+            }
+        });
+    }
+
+    @Subscribe
+    public void onServerConnected(ServerConnectedEvent event) {
+        Long started = switchStartedNanos.remove(event.getPlayer().getUniqueId());
+        if (started != null) {
+            logger.info("Switch to {} completed for {} in {} ms",
+                event.getServer().getServerInfo().getName(), event.getPlayer().getUsername(),
+                (System.nanoTime() - started) / 1_000_000L);
+        }
     }
 }

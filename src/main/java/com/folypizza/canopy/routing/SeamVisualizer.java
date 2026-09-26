@@ -20,7 +20,7 @@ import org.bukkit.event.player.PlayerJoinEvent;
 public class SeamVisualizer implements Listener {
     private static final int RANGE_BLOCKS = 16;   // show the wall within this distance
     private static final int HALF_WIDTH = 8;      // z extent to each side of the player
-    private static final long PERIOD_TICKS = 5;   // redraw cadence
+    private static final long PERIOD_TICKS = 10;  // redraw cadence
     private static final Particle.DustOptions RED =
         new Particle.DustOptions(Color.fromRGB(255, 45, 45), 1.6f);
     private static final Particle.DustOptions GREEN =
@@ -52,9 +52,8 @@ public class SeamVisualizer implements Listener {
         Location loc = p.getLocation();
         if (Math.abs(loc.getX() - boundaryX) > RANGE_BLOCKS) return;
         World w = p.getWorld();
-        // A dense wall of red/green dust on the seam plane (x = boundary), a few blocks to each
-        // side of the player in z and a column in height, so the border reads as a coloured
-        // curtain. Two rows per block in z and y for density; colours alternate per cell.
+        // Draw a visible red/green dust curtain and add bright end-rod markers along it. The
+        // secondary particle stays legible with client particle settings that make dust subtle.
         double cz = loc.getZ();
         double py = loc.getY();
         boolean first = loggedOnce.add(p.getUniqueId());
@@ -63,10 +62,13 @@ public class SeamVisualizer implements Listener {
                 .info("[seam] drawing seam wall for {} at x={} (player x={})",
                     p.getName(), boundaryX, String.format("%.1f", loc.getX()));
         }
-        for (double z = cz - HALF_WIDTH; z <= cz + HALF_WIDTH; z += 0.5) {
-            for (double y = py - 1; y <= py + 4; y += 0.5) {
+        for (double z = cz - HALF_WIDTH; z <= cz + HALF_WIDTH; z += 1.0) {
+            for (double y = py - 1; y <= py + 4; y += 0.75) {
                 Particle.DustOptions colour = (((int) Math.floor(z) + (int) Math.floor(y)) & 1) == 0 ? RED : GREEN;
                 p.spawnParticle(Particle.DUST, new Location(w, boundaryX, y, z), 1, 0, 0, 0, 0, colour);
+                if ((((int) Math.floor(z) + (int) Math.floor(y)) & 1) == 0) {
+                    p.spawnParticle(Particle.END_ROD, new Location(w, boundaryX, y, z), 1, 0, 0, 0, 0);
+                }
             }
         }
     }
