@@ -27,17 +27,22 @@ player.
 ## How it works
 
 **Partitioning.** A shard owns one side of an X boundary. With a zero-width buffer the seam
-is a single line and coordinates are continuous 1:1 — a player standing on a block steps
-across and lands on the same block on the peer. A non-zero buffer instead leaves an
-inaccessible band `[boundary − buffer, boundary + buffer)` and lands the player at a fixed
-point on the far edge.
+is a single line and coordinates are continuous 1:1. A non-zero buffer leaves an
+inaccessible band `[boundary − buffer, boundary + buffer)` and begins the landing at its
+far edge.
 
 **Handover.** When a player crosses toward the peer, the shard serialises their state —
-position, game mode, flight, elytra, vitals, experience, inventory, armour, off-hand, and
-ender chest — pushes it to the destination shard over gRPC, and asks the gateway to switch
-the connection. Position and view direction are captured at the exact moment of crossing and
-restored as the player arrives, so they resume from where — and where they were looking —
-when they stepped over the seam.
+position, game mode, flight, elytra, active firework boost, potion effects, vitals,
+experience, inventory, armour, off-hand, and ender chest — pushes it to the destination
+shard over gRPC, and asks the gateway to switch
+the connection. The destination projects the crossing position along the player's recent
+movement for the time spent switching backends, then restores their view direction and
+momentum.
+
+**Ender pearls.** A pearl thrown across the seam continues its flight on the peer shard.
+When it lands, the peer reports the impact to the thrower's shard, which hands the player
+over to that position. A pearl that lands on the thrower's own shard uses normal server
+behaviour.
 
 **Unavailable peer.** If the destination shard is unreachable the crossing is refused: the
 player is knocked back into their own region with a short maintenance notice instead of

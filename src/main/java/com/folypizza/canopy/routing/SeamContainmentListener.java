@@ -13,13 +13,14 @@ import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.inventory.Inventory;
 
 /**
- * Keeps non-player entities, items, and pearl teleports from crossing the seam.
+ * Keeps non-player entities and item transfers from crossing the seam.
  *
  * Only players are handed between shards; anything else that leaves a shard's accessible
  * side would pass into the inaccessible buffer band or the peer's territory, which this
  * process does not own. To avoid duplication and loss, such crossings are blocked here:
  *
- * - Ender-pearl / chorus teleports that would land off this side are cancelled.
+ * - Teleports that would land off this side are cancelled. PearlTransitManager handles
+ *   cross-shard pearls through a player handover after impact.
  * - Non-player entities are stopped from walking into the buffer band.
  * - Item transfers (hoppers, droppers) into the buffer band are cancelled.
  */
@@ -56,31 +57,11 @@ public class SeamContainmentListener implements Listener {
         }
     }
 
-    /**
-     * Contain thrown projectiles (ender pearls especially) at the seam: the teleport-cancel above
-     * is not reliable for pearls on Folia, so we watch the pearl itself and remove it the instant it
-     * crosses off our side, before it can teleport the thrower past the border.
-     */
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onProjectileLaunch(org.bukkit.event.entity.ProjectileLaunchEvent e) {
-        if (!enabled) return;
-        if (!(e.getEntity() instanceof org.bukkit.entity.EnderPearl pearl)) return;
-        pearl.getScheduler().runAtFixedRate(plugin, task -> {
-            if (!pearl.isValid() || pearl.isDead()) {
-                task.cancel();
-                return;
-            }
-            if (!owns(pearl.getLocation().getX())) {
-                pearl.remove();  // stops the pending teleport — the pearl fizzles at the border
-                task.cancel();
-            }
-        }, () -> { }, 1L, 1L);
-    }
-
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void onEntityMove(EntityMoveEvent e) {
         if (!enabled || !e.hasChangedBlock()) return;
         if (e.getEntity() instanceof Player) return; // players use the handover path
+        if (e.getEntity() instanceof org.bukkit.entity.EnderPearl) return; // handled by PearlTransitManager
         if (!owns(e.getTo().getX())) {
             // Non-player entity trying to enter the buffer band / peer side — stop it.
             e.setCancelled(true);

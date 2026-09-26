@@ -14,6 +14,7 @@ import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.folypizza.canopy.migration.PlayerStateCodec.LandingMotion;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Set;
@@ -52,7 +53,7 @@ public class BoundaryTransferListener implements Listener {
     private final PlayerStateInbox inbox;
     private final com.folypizza.canopy.grpc.PeerManager peerManager;
 
-    private static final long SETTLE_MS = 3000;
+    private static final long SETTLE_MS = 1500;
     // Lead distance before the border to initiate the switch when walking toward the peer. Kept at
     // zero so the crossing position and look direction are captured at the true seam crossing and
     // preserved exactly on arrival; a non-zero lead would capture (and land) a fraction early.
@@ -62,13 +63,19 @@ public class BoundaryTransferListener implements Listener {
     private final Set<UUID> transferring = ConcurrentHashMap.newKeySet();
     // When each player joined, to suppress transfer during the spawn/restore settling window.
     private final java.util.Map<UUID, Long> joinedAt = new ConcurrentHashMap<>();
+    private record MovementSample(double x, double z, long atNanos, double stepX, double stepZ) {}
+    private final java.util.Map<UUID, MovementSample> recentMovement = new ConcurrentHashMap<>();
     // Throttle the maintenance message per player.
     private static final long DENY_MSG_MS = 3000;
     private final java.util.Map<UUID, Long> lastDenyMsg = new ConcurrentHashMap<>();
 
-    // Ticks of movement to project the landing forward by, so a crossing lands the player where
-    // their momentum would carry them during the switch rather than pinned to the boundary block.
+    // Fallback projection when source and destination wall clocks cannot be compared.
     private final int landingLeadTicks;
+    // A cold backend join can exceed a second. Keep enough travel to cover that delay while
+    // bounding projection if a switch stalls or the player changes direction mid-switch.
+    private static final double MAX_LANDING_TICKS = 40.0;
+    private static final double MAX_GROUND_STEP = 0.35;
+    private static final double MAX_GROUND_PROJECTION = 12.0;
 
     public BoundaryTransferListener(JavaPlugin plugin, boolean enabled, double boundaryX, int buffer,
                                     boolean ownsWest, String mode, String peerServer,
@@ -113,6 +120,28 @@ public class BoundaryTransferListener implements Listener {
         return ownsWest ? Math.max(x, boundaryX) : Math.min(x, boundaryX - 0.001);
     }
 
+    /** Extend a walking crossing by the time spent switching backends. */
+    private Location projectLanding(Location base, LandingMotion motion) {
+        if (base == null || motion == null || motion.startedAtMillis() == 0) return base;
+        if (!Double.isFinite(motion.stepX()) || !Double.isFinite(motion.stepZ())) return base;
+        long elapsed = System.currentTimeMillis() - motion.startedAtMillis();
+        double ticks = elapsed >= 0 && elapsed <= 5_000
+            ? Math.min(elapsed / 50.0, MAX_LANDING_TICKS)
+            : landingLeadTicks;
+        double travelX = motion.stepX() * ticks;
+        double travelZ = motion.stepZ() * ticks;
+        double distance = Math.hypot(travelX, travelZ);
+        if (distance > MAX_GROUND_PROJECTION) {
+            travelX *= MAX_GROUND_PROJECTION / distance;
+            travelZ *= MAX_GROUND_PROJECTION / distance;
+        }
+        Location projected = base.clone().add(travelX, 0, travelZ);
+        projected.setX(ownsWest
+            ? Math.min(projected.getX(), boundaryX - buffer - 0.001)
+            : Math.max(projected.getX(), boundaryX + buffer));
+        return projected;
+    }
+
     @EventHandler(priority = EventPriority.MONITOR)
     public void onJoin(PlayerJoinEvent e) {
         if (!enabled) return;
@@ -128,13 +157,27 @@ public class BoundaryTransferListener implements Listener {
         byte[] blob = inbox != null ? inbox.take(p.getUniqueId()) : null;
         if (blob != null) {
             p.getScheduler().run(plugin, t -> {
-                Location loc = com.folypizza.canopy.migration.PlayerStateCodec.apply(p, blob, p.getWorld());
+                Location loc = projectLanding(
+                    com.folypizza.canopy.migration.PlayerStateCodec.apply(p, blob, p.getWorld()),
+                    com.folypizza.canopy.migration.PlayerStateCodec.readLandingMotion(blob));
                 org.bukkit.util.Vector vel = com.folypizza.canopy.migration.PlayerStateCodec.readVelocity(blob);
+                org.bukkit.inventory.ItemStack boost =
+                    com.folypizza.canopy.migration.PlayerStateCodec.readFireworkBoost(blob);
                 if (loc != null) {
+                    if (com.folypizza.canopy.migration.PlayerStateCodec.readLandingMotion(blob) != null) {
+                        log.info("Landing {} at ({},{},{})", p.getName(),
+                            loc.getX(), loc.getY(), loc.getZ());
+                    }
                     // Restore momentum after the teleport lands (a teleport clears velocity), so the
                     // player keeps moving through the seam instead of stopping dead on arrival.
                     p.teleportAsync(loc).thenAccept(ok -> {
-                        if (ok && vel != null) p.getScheduler().run(plugin, tt -> p.setVelocity(vel), null);
+                        if (ok) p.getScheduler().run(plugin, tt -> {
+                            if (vel != null) p.setVelocity(vel);
+                            if (boost != null) {
+                                p.setGliding(true);
+                                p.boostElytra(boost);
+                            }
+                        }, () -> {});
                     });
                 }
                 // Pearl teleport sound, played on arrival so it's guaranteed to reach the client
@@ -163,6 +206,11 @@ public class BoundaryTransferListener implements Listener {
                     Double.parseDouble(parts[0]), Double.parseDouble(parts[1]), Double.parseDouble(parts[2]),
                     parts.length > 3 ? Float.parseFloat(parts[3]) : 0f,
                     parts.length > 4 ? Float.parseFloat(parts[4]) : 0f);
+                if (parts.length >= 8) {
+                    loc = projectLanding(loc, new LandingMotion(
+                        Double.parseDouble(parts[5]), Double.parseDouble(parts[6]),
+                        Long.parseLong(parts[7])));
+                }
                 p.teleportAsync(loc);
                 p.playSound(loc, Sound.ENTITY_ENDERMAN_TELEPORT, 1.0f, 1.0f);
                 p.storeCookie(cookieKey, new byte[0]);
@@ -187,6 +235,30 @@ public class BoundaryTransferListener implements Listener {
         // from) the seam uses no lead, so nobody lingering near the border is yanked across.
         Location from = e.getFrom();
         double dx = to.getX() - from.getX();
+        double dz = to.getZ() - from.getZ();
+        long nowNanos = System.nanoTime();
+        MovementSample previous = recentMovement.get(p.getUniqueId());
+        double stepX = dx;
+        double stepZ = dz;
+        if (previous != null) {
+            long elapsedNanos = nowNanos - previous.atNanos();
+            if (elapsedNanos >= 20_000_000L && elapsedNanos <= 250_000_000L) {
+                double scale = 50_000_000.0 / elapsedNanos;
+                stepX = 0.5 * previous.stepX() + 0.5 * (to.getX() - previous.x()) * scale;
+                stepZ = 0.5 * previous.stepZ() + 0.5 * (to.getZ() - previous.z()) * scale;
+            } else if (elapsedNanos < 20_000_000L) {
+                stepX = previous.stepX();
+                stepZ = previous.stepZ();
+            }
+        }
+        double stepLength = Math.hypot(stepX, stepZ);
+        double maxStep = p.isGliding() || p.isFlying() ? 3.0 : MAX_GROUND_STEP;
+        if (stepLength > maxStep) {
+            stepX *= maxStep / stepLength;
+            stepZ *= maxStep / stepLength;
+        }
+        recentMovement.put(p.getUniqueId(), new MovementSample(
+            to.getX(), to.getZ(), nowNanos, stepX, stepZ));
         double lead = (ownsWest ? dx > 0 : dx < 0) ? CROSS_LEAD : 0.0;
         boolean crossed = ownsWest
             ? (to.getX() >= boundaryX - buffer - lead)
@@ -207,18 +279,13 @@ public class BoundaryTransferListener implements Listener {
 
         if (!transferring.add(p.getUniqueId())) return; // already transferring
 
-        // Project the landing forward along the player's movement by a few ticks, so with 1:1
-        // continuous coordinates (buffer 0) they arrive where their momentum would have carried
-        // them during the switch — not pinned to the boundary block. With a non-zero buffer the
-        // player instead hops the inaccessible band to a fixed far-edge X.
-        double dz = to.getZ() - from.getZ();
-        double projX = to.getX() + dx * landingLeadTicks;
-        double projZ = to.getZ() + dz * landingLeadTicks;
-        double landX = buffer > 0 ? landingX() : clampLandingX(projX);
-        double landZ = buffer > 0 ? to.getZ() : projZ;
-        Location landing = new Location(p.getWorld(), landX, to.getY(), landZ,
+        // Record the exact crossing and movement per tick. The destination projects it by the
+        // elapsed switch time, so a slower backend switch lands farther into the peer shard.
+        double landX = buffer > 0 ? landingX() : clampLandingX(to.getX());
+        Location landing = new Location(p.getWorld(), landX, to.getY(), to.getZ(),
             to.getYaw(), to.getPitch());
-        doHandover(p, landing);
+        log.info("Crossing {} at x={} step=({}, {})", p.getName(), to.getX(), stepX, stepZ);
+        doHandover(p, landing, new LandingMotion(stepX, stepZ, System.currentTimeMillis()));
     }
 
     /**
@@ -236,18 +303,44 @@ public class BoundaryTransferListener implements Listener {
         return true;
     }
 
+    /** Transfer a player to a pearl's actual impact point on the destination shard. */
+    public boolean forceHandoverAt(Player p, double x, double y, double z, boolean pearl) {
+        if (!enabled || !Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)) return false;
+        boolean onPeer = ownsWest ? x >= boundaryX + buffer : x < boundaryX - buffer;
+        if (!onPeer || (peerManager != null && !peerManager.isPeerHealthy())) return false;
+        if (!transferring.add(p.getUniqueId())) return false;
+        if (pearl && p.getGameMode() != org.bukkit.GameMode.CREATIVE
+            && p.getGameMode() != org.bukkit.GameMode.SPECTATOR) {
+            p.damage(5.0);
+            if (p.isDead()) {
+                transferring.remove(p.getUniqueId());
+                return false;
+            }
+        }
+        Location current = p.getLocation();
+        Location landing = new Location(p.getWorld(), x, y, z,
+            current.getYaw(), current.getPitch());
+        doHandover(p, landing);
+        return true;
+    }
+
     /** Serialize + push state, then switch the player to the peer shard. */
     private void doHandover(Player p, Location landing) {
+        doHandover(p, landing, new LandingMotion(0, 0, 0));
+    }
+
+    private void doHandover(Player p, Location landing, LandingMotion motion) {
         // The teleport sound is played on the destination when state is applied (see tryApplyState),
         // where it reliably reaches the client after the server switch.
         byte[] payload = (landing.getX() + ";" + landing.getY() + ";" + landing.getZ() + ";"
-            + landing.getYaw() + ";" + landing.getPitch()).getBytes(StandardCharsets.UTF_8);
+            + landing.getYaw() + ";" + landing.getPitch() + ";" + motion.stepX() + ";"
+            + motion.stepZ() + ";" + motion.startedAtMillis()).getBytes(StandardCharsets.UTF_8);
         try {
             p.storeCookie(cookieKey, payload);
             // Serialize full player state now (on the player's region thread) with the landing
             // position, and push it to the destination shard so it's waiting when they rejoin.
             if (peerManager != null) {
-                final byte[] blob = com.folypizza.canopy.migration.PlayerStateCodec.serialize(p, landing);
+                final byte[] blob = com.folypizza.canopy.migration.PlayerStateCodec.serialize(p, landing, motion);
                 final String uuid = p.getUniqueId().toString();
                 plugin.getServer().getAsyncScheduler().runNow(plugin,
                     t -> peerManager.pushPlayerState(uuid, blob));
@@ -303,5 +396,6 @@ public class BoundaryTransferListener implements Listener {
         transferring.remove(e.getPlayer().getUniqueId());
         joinedAt.remove(e.getPlayer().getUniqueId());
         lastDenyMsg.remove(e.getPlayer().getUniqueId());
+        recentMovement.remove(e.getPlayer().getUniqueId());
     }
 }

@@ -73,6 +73,7 @@ public class CanopyPlugin extends JavaPlugin {
     private PeerManager peerManager;
     private BoundaryTransferListener boundaryTransferListener;
     private com.folypizza.canopy.routing.PlayerStateInbox playerStateInbox;
+    private com.folypizza.canopy.routing.PearlTransitManager pearlTransitManager;
     private com.folypizza.canopy.halo.HaloEditStore haloEditStore;
     // Resolved transfer/seam parameters (read once in initCoreServices).
     private double transferBoundaryX;
@@ -216,6 +217,9 @@ public class CanopyPlugin extends JavaPlugin {
         List<String> peers = getConfig().getStringList("shard.peers");
         peerManager = new PeerManager(shardId, peers, tileTransferService, shardRegistry, partitionMap,
             this, transferBoundaryX, transferHaloWidth, transferOwnsWest);
+        pearlTransitManager = new com.folypizza.canopy.routing.PearlTransitManager(
+            this, peerManager, getConfig().getBoolean("transfer.enabled", false),
+            transferBoundaryX, getConfig().getInt("transfer.buffer", 4), transferOwnsWest);
 
         log.info("Core services initialized (shard={}, regions={}, peers={})",
             shardId, numRegions, peers.size());
@@ -259,8 +263,8 @@ public class CanopyPlugin extends JavaPlugin {
         // The gRPC-exposed coordination + migration services share the plugin's live state.
         ShardCoordinationServiceImpl coordinationService = new ShardCoordinationServiceImpl(
             shardId, getHostAddress(), metricsCollector, entityTracker, routingProxy,
-            partitionMap, tileVersionService, playerStateInbox, haloEditStore, localWorldTime::get,
-            localWeatherBits::get);
+            partitionMap, tileVersionService, playerStateInbox, haloEditStore, pearlTransitManager,
+            localWorldTime::get, localWeatherBits::get);
         MigrationServiceImpl migrationGrpc = new MigrationServiceImpl(shardId, migrationService, this);
 
         grpcServer = new GrpcServer(grpcPort, tileVersionService, coordinationService, migrationGrpc);
@@ -308,6 +312,8 @@ public class CanopyPlugin extends JavaPlugin {
             this, transferEnabled, transferBoundaryX, buffer, transferOwnsWest, mode, peerServer, peerHost, peerPort,
             playerStateInbox, peerManager);
         getServer().getPluginManager().registerEvents(boundaryTransferListener, this);
+        pearlTransitManager.setTransfers(boundaryTransferListener);
+        getServer().getPluginManager().registerEvents(pearlTransitManager, this);
         log.info("Event listeners registered (world events, seam corridor, boundary handover enabled={} mode={} owns={} boundaryX={} buffer={} haloWidth={} peer-server={})",
             transferEnabled, mode, transferOwnsWest ? "west" : "east", transferBoundaryX, buffer, transferHaloWidth, peerServer);
 

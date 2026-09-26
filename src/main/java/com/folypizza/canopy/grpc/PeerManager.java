@@ -101,6 +101,34 @@ public class PeerManager {
         return false;
     }
 
+    public boolean relayPearl(com.folypizza.canopy.proto.PearlFlight flight) {
+        for (ManagedChannel channel : channels.values()) {
+            try {
+                var ack = ShardCoordinationServiceGrpc.newBlockingStub(channel)
+                    .withDeadlineAfter(RPC_DEADLINE_SEC, TimeUnit.SECONDS)
+                    .relayPearl(flight);
+                if (ack.getOk()) return true;
+            } catch (Exception e) {
+                log.warn("relayPearl to peer failed: {}", e.getMessage());
+            }
+        }
+        return false;
+    }
+
+    public boolean finishPearl(com.folypizza.canopy.proto.PearlImpact impact) {
+        for (ManagedChannel channel : channels.values()) {
+            try {
+                var ack = ShardCoordinationServiceGrpc.newBlockingStub(channel)
+                    .withDeadlineAfter(RPC_DEADLINE_SEC, TimeUnit.SECONDS)
+                    .finishPearl(impact);
+                if (ack.getOk()) return true;
+            } catch (Exception e) {
+                log.warn("finishPearl to peer failed: {}", e.getMessage());
+            }
+        }
+        return false;
+    }
+
     /** Pull the peer's near-boundary block edits and mirror them into our local halo strip. */
     private void pullHaloEdits(String addr, ManagedChannel channel) {
         if (haloWidth <= 0 || plugin == null) return;

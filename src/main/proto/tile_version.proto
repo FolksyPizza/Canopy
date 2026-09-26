@@ -56,6 +56,9 @@ service ShardCoordinationService {
     rpc GetTileVersionStream(TileVersionQuery) returns (stream TileVersionResponse);
     // Hand a player's full state to the destination shard just before a proxy switch.
     rpc PushPlayerState(PlayerStatePush) returns (PlayerStateAck);
+    // Continue a thrown ender pearl on the peer and return its impact to the thrower's shard.
+    rpc RelayPearl(PearlFlight) returns (PearlAck);
+    rpc FinishPearl(PearlImpact) returns (PearlAck);
     // Pull block edits in a near-seam strip for halo mirroring.
     rpc GetHaloEdits(HaloEditsQuery) returns (HaloEdits);
 }
@@ -66,6 +69,31 @@ message PlayerStatePush {
 }
 
 message PlayerStateAck {
+    bool ok = 1;
+}
+
+message PearlFlight {
+    string id = 1;
+    string owner_uuid = 2;
+    string world = 3;
+    double x = 4;
+    double y = 5;
+    double z = 6;
+    double vx = 7;
+    double vy = 8;
+    double vz = 9;
+}
+
+message PearlImpact {
+    string id = 1;
+    string owner_uuid = 2;
+    string world = 3;
+    double x = 4;
+    double y = 5;
+    double z = 6;
+}
+
+message PearlAck {
     bool ok = 1;
 }
 

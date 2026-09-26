@@ -416,7 +416,7 @@ index 0000000..d72e7b1
 +  }
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/ConfigSessionHandler.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/ConfigSessionHandler.java
-index 8cc1bf8..77b7d4d 100644
+index 8cc1bf8..21f1627 100644
 --- a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/ConfigSessionHandler.java
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/ConfigSessionHandler.java
 @@ -31,6 +31,7 @@ import com.velocitypowered.proxy.VelocityServer;
@@ -435,7 +435,7 @@ index 8cc1bf8..77b7d4d 100644
  import com.velocitypowered.proxy.protocol.packet.config.RegistrySyncPacket;
  import com.velocitypowered.proxy.protocol.packet.config.StartUpdatePacket;
  import com.velocitypowered.proxy.protocol.packet.config.TagsUpdatePacket;
-@@ -118,26 +120,60 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+@@ -118,32 +120,73 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
      return false;
    }
  
@@ -496,7 +496,20 @@ index 8cc1bf8..77b7d4d 100644
      serverConn.getPlayer().getConnection().write(packet);
      return true;
    }
-@@ -235,6 +271,20 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+ 
+   @Override
+   public boolean handle(KeepAlivePacket packet) {
++    if (canopySeamless()) {
++      // The client remains in PLAY while this backend is in CONFIG. Answer here: forwarding
++      // the request would make the client's PLAY response fail the state check in
++      // ConnectedPlayer.forwardKeepAlive, leaving the backend waiting for an answer.
++      serverConn.ensureConnected().write(packet);
++      return true;
++    }
+     serverConn.getPendingPings().put(packet.getRandomId(), System.nanoTime());
+     serverConn.getPlayer().getConnection().write(packet);
+     return true;
+@@ -235,6 +278,20 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
    public boolean handle(FinishedUpdatePacket packet) {
      final MinecraftConnection smc = serverConn.ensureConnected();
      final ConnectedPlayer player = serverConn.getPlayer();
@@ -517,7 +530,7 @@ index 8cc1bf8..77b7d4d 100644
      final ClientConfigSessionHandler configHandler = (ClientConfigSessionHandler) player.getConnection().getActiveSessionHandler();
  
      smc.getChannel().pipeline().get(MinecraftVarintFrameDecoder.class).setState(StateRegistry.PLAY);
-@@ -306,6 +356,9 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+@@ -306,6 +363,9 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
  
    @Override
    public boolean handle(RegistrySyncPacket packet) {
@@ -527,7 +540,7 @@ index 8cc1bf8..77b7d4d 100644
      serverConn.getPlayer().getConnection().write(packet.retain());
      return true;
    }
-@@ -370,6 +423,9 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+@@ -370,6 +430,9 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
  
    @Override
    public boolean handle(CodeOfConductPacket packet) {

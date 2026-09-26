@@ -31,6 +31,7 @@ public class ShardCoordinationServiceImpl extends ShardCoordinationServiceGrpc.S
     private final PartitionMap partitionMap;
     private final TileVersionServiceImpl tileVersionService;
     private final com.folypizza.canopy.routing.PlayerStateInbox playerStateInbox;
+    private final com.folypizza.canopy.routing.PearlTransitManager pearlTransitManager;
     private final com.folypizza.canopy.halo.HaloEditStore haloEditStore;
     private final java.util.function.LongSupplier worldTimeSupplier;
     private final java.util.function.IntSupplier weatherSupplier;
@@ -40,6 +41,7 @@ public class ShardCoordinationServiceImpl extends ShardCoordinationServiceGrpc.S
                                         PartitionMap partitionMap, TileVersionServiceImpl tileVersionService,
                                         com.folypizza.canopy.routing.PlayerStateInbox playerStateInbox,
                                         com.folypizza.canopy.halo.HaloEditStore haloEditStore,
+                                        com.folypizza.canopy.routing.PearlTransitManager pearlTransitManager,
                                         java.util.function.LongSupplier worldTimeSupplier,
                                         java.util.function.IntSupplier weatherSupplier) {
         this.worldTimeSupplier = worldTimeSupplier;
@@ -53,6 +55,7 @@ public class ShardCoordinationServiceImpl extends ShardCoordinationServiceGrpc.S
         this.tileVersionService = tileVersionService;
         this.playerStateInbox = playerStateInbox;
         this.haloEditStore = haloEditStore;
+        this.pearlTransitManager = pearlTransitManager;
     }
 
     @Override
@@ -111,6 +114,22 @@ public class ShardCoordinationServiceImpl extends ShardCoordinationServiceGrpc.S
             log.warn("pushPlayerState failed: {}", e.getMessage());
             responseObserver.onNext(com.folypizza.canopy.proto.PlayerStateAck.newBuilder().setOk(false).build());
         }
+        responseObserver.onCompleted();
+    }
+
+    @Override
+    public void relayPearl(com.folypizza.canopy.proto.PearlFlight request,
+                           StreamObserver<com.folypizza.canopy.proto.PearlAck> responseObserver) {
+        responseObserver.onNext(com.folypizza.canopy.proto.PearlAck.newBuilder()
+            .setOk(pearlTransitManager.acceptFlight(request)).build());
+        responseObserver.onCompleted();
+    }
+
+    @Override
+    public void finishPearl(com.folypizza.canopy.proto.PearlImpact request,
+                            StreamObserver<com.folypizza.canopy.proto.PearlAck> responseObserver) {
+        responseObserver.onNext(com.folypizza.canopy.proto.PearlAck.newBuilder()
+            .setOk(pearlTransitManager.acceptImpact(request)).build());
         responseObserver.onCompleted();
     }
 

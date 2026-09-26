@@ -180,6 +180,13 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
 
   @Override
   public boolean handle(KeepAlivePacket packet) {
+    if (canopySeamless()) {
+      // The client remains in PLAY while this backend is in CONFIG. Answer here: forwarding
+      // the request would make the client's PLAY response fail the state check in
+      // ConnectedPlayer.forwardKeepAlive, leaving the backend waiting for an answer.
+      serverConn.ensureConnected().write(packet);
+      return true;
+    }
     serverConn.getPendingPings().put(packet.getRandomId(), System.nanoTime());
     serverConn.getPlayer().getConnection().write(packet);
     return true;

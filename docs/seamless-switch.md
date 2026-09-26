@@ -23,6 +23,8 @@ registries and the client-side config phase is redundant.
 - `ConfigSessionHandler` echoes the known-packs negotiation back to the backend, because a
   client that stays in the play phase never answers it; without the echo the backend
   handshake stalls.
+- The gateway answers backend configuration keepalives itself while the client remains in
+  the play phase, so a protocol-state mismatch cannot discard the reply.
 - When the backend reaches the play phase and sends JoinGame, the gateway completes the
   switch (see below).
 

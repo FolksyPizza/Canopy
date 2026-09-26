@@ -20,7 +20,7 @@ import org.bukkit.event.player.PlayerJoinEvent;
 public class SeamVisualizer implements Listener {
     private static final int RANGE_BLOCKS = 16;   // show the wall within this distance
     private static final int HALF_WIDTH = 8;      // z extent to each side of the player
-    private static final long PERIOD_TICKS = 10;  // redraw cadence
+    private static final long PERIOD_TICKS = 20;  // redraw cadence
     private static final Particle.DustOptions RED =
         new Particle.DustOptions(Color.fromRGB(255, 45, 45), 1.6f);
     private static final Particle.DustOptions GREEN =
@@ -62,12 +62,13 @@ public class SeamVisualizer implements Listener {
                 .info("[seam] drawing seam wall for {} at x={} (player x={})",
                     p.getName(), boundaryX, String.format("%.1f", loc.getX()));
         }
-        for (double z = cz - HALF_WIDTH; z <= cz + HALF_WIDTH; z += 1.0) {
-            for (double y = py - 1; y <= py + 4; y += 0.75) {
+        for (double z = cz - HALF_WIDTH; z <= cz + HALF_WIDTH; z += 2.0) {
+            for (double y = py - 1; y <= py + 4; y += 1.5) {
                 Particle.DustOptions colour = (((int) Math.floor(z) + (int) Math.floor(y)) & 1) == 0 ? RED : GREEN;
-                p.spawnParticle(Particle.DUST, new Location(w, boundaryX, y, z), 1, 0, 0, 0, 0, colour);
+                Location point = new Location(w, boundaryX, y, z);
+                p.spawnParticle(Particle.DUST, point, 3, 0.08, 0.15, 0.08, 0, colour, true);
                 if ((((int) Math.floor(z) + (int) Math.floor(y)) & 1) == 0) {
-                    p.spawnParticle(Particle.END_ROD, new Location(w, boundaryX, y, z), 1, 0, 0, 0, 0);
+                    p.spawnParticle(Particle.END_ROD, point, 1, 0, 0, 0, 0, null, true);
                 }
             }
         }

@@ -24,16 +24,23 @@ import java.io.DataOutputStream;
  */
 public final class PlayerStateCodec {
     private static final Logger log = LoggerFactory.getLogger(PlayerStateCodec.class);
-    private static final int VERSION = 3;
+    private static final int VERSION = 4;
+
+    /** Movement observed on the source shard when the crossing began. */
+    public record LandingMotion(double stepX, double stepZ, long startedAtMillis) {}
 
     private PlayerStateCodec() {}
 
     public static byte[] serialize(Player p) {
-        return serialize(p, p.getLocation());
+        return serialize(p, p.getLocation(), new LandingMotion(0, 0, 0));
     }
 
     /** Serialize state but record {@code pos} as the destination position (deterministic landing). */
     public static byte[] serialize(Player p, Location pos) {
+        return serialize(p, pos, new LandingMotion(0, 0, 0));
+    }
+
+    public static byte[] serialize(Player p, Location pos, LandingMotion motion) {
         try {
             ByteArrayOutputStream baos = new ByteArrayOutputStream(4096);
             DataOutputStream out = new DataOutputStream(baos);
@@ -49,6 +56,11 @@ public final class PlayerStateCodec {
             out.writeDouble(vel.getX());
             out.writeDouble(vel.getY());
             out.writeDouble(vel.getZ());
+
+            out.writeDouble(motion.stepX());
+            out.writeDouble(motion.stepZ());
+            out.writeLong(motion.startedAtMillis());
+            writeItem(out, activeFireworkBoost(p));
 
             out.writeUTF(p.getGameMode().name());
             out.writeBoolean(p.getAllowFlight());
@@ -66,6 +78,15 @@ public final class PlayerStateCodec {
             writeItems(out, inv.getArmorContents());
             writeItem(out, inv.getItemInOffHand());
             writeItems(out, p.getEnderChest().getContents());
+            out.writeInt(p.getActivePotionEffects().size());
+            for (org.bukkit.potion.PotionEffect effect : p.getActivePotionEffects()) {
+                out.writeUTF(effect.getType().getKey().toString());
+                out.writeInt(effect.getDuration());
+                out.writeInt(effect.getAmplifier());
+                out.writeBoolean(effect.isAmbient());
+                out.writeBoolean(effect.hasParticles());
+                out.writeBoolean(effect.hasIcon());
+            }
 
             out.flush();
             return baos.toByteArray();
@@ -92,6 +113,36 @@ public final class PlayerStateCodec {
         }
     }
 
+    public static LandingMotion readLandingMotion(byte[] blob) {
+        if (blob == null || blob.length == 0) return null;
+        try {
+            DataInputStream in = new DataInputStream(new ByteArrayInputStream(blob));
+            if (in.readInt() != VERSION) return null;
+            in.readDouble(); in.readDouble(); in.readDouble(); // position
+            in.readFloat(); in.readFloat();                    // look
+            in.readDouble(); in.readDouble(); in.readDouble(); // velocity
+            return new LandingMotion(in.readDouble(), in.readDouble(), in.readLong());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Rocket attached to a gliding player, if one was active at the crossing. */
+    public static ItemStack readFireworkBoost(byte[] blob) {
+        if (blob == null || blob.length == 0) return null;
+        try {
+            DataInputStream in = new DataInputStream(new ByteArrayInputStream(blob));
+            if (in.readInt() != VERSION) return null;
+            in.readDouble(); in.readDouble(); in.readDouble();
+            in.readFloat(); in.readFloat();
+            in.readDouble(); in.readDouble(); in.readDouble();
+            in.readDouble(); in.readDouble(); in.readLong();
+            return readItem(in);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     /** Apply a state blob to a freshly-joined player. Returns the target location (or null). */
     public static Location apply(Player p, byte[] blob, World world) {
         if (blob == null || blob.length == 0) return null;
@@ -107,6 +158,8 @@ public final class PlayerStateCodec {
             Location loc = new Location(world, x, y, z, yaw, pitch);
 
             in.readDouble(); in.readDouble(); in.readDouble(); // velocity — applied post-teleport, see readVelocity
+            in.readDouble(); in.readDouble(); in.readLong(); // crossing movement and start time
+            readItem(in); // attached firework boost, restored after arrival teleport
 
             String gm = in.readUTF();
             boolean allowFlight = in.readBoolean();
@@ -123,6 +176,21 @@ public final class PlayerStateCodec {
             ItemStack[] armor = readItems(in);
             ItemStack offhand = readItem(in);
             ItemStack[] ender = readItems(in);
+            int effectCount = in.readInt();
+            if (effectCount < 0 || effectCount > 128) throw new IllegalArgumentException("Invalid potion effect count");
+            java.util.List<org.bukkit.potion.PotionEffect> effects = new java.util.ArrayList<>(effectCount);
+            for (int i = 0; i < effectCount; i++) {
+                org.bukkit.NamespacedKey key = org.bukkit.NamespacedKey.fromString(in.readUTF());
+                int duration = in.readInt();
+                int amplifier = in.readInt();
+                boolean ambient = in.readBoolean();
+                boolean particles = in.readBoolean();
+                boolean icon = in.readBoolean();
+                org.bukkit.potion.PotionEffectType type = key == null ? null
+                    : org.bukkit.potion.PotionEffectType.getByKey(key);
+                if (type != null) effects.add(new org.bukkit.potion.PotionEffect(
+                    type, duration, amplifier, ambient, particles, icon));
+            }
 
             PlayerInventory inv = p.getInventory();
             inv.setStorageContents(storage);
@@ -142,6 +210,10 @@ public final class PlayerStateCodec {
             p.setSaturation(sat);
             p.setExp(exp);
             p.setLevel(level);
+            for (org.bukkit.potion.PotionEffect current : p.getActivePotionEffects()) {
+                p.removePotionEffect(current.getType());
+            }
+            for (org.bukkit.potion.PotionEffect effect : effects) p.addPotionEffect(effect);
 
             return loc;
         } catch (Exception e) {
@@ -154,6 +226,23 @@ public final class PlayerStateCodec {
         out.writeInt(items == null ? 0 : items.length);
         if (items == null) return;
         for (ItemStack it : items) writeItem(out, it);
+    }
+
+    private static ItemStack activeFireworkBoost(Player p) {
+        if (!p.isGliding()) return null;
+        try {
+            for (org.bukkit.entity.Entity entity : p.getNearbyEntities(2, 2, 2)) {
+                if (entity instanceof org.bukkit.entity.Firework firework
+                    && firework.getBoostedEntity() == p) {
+                    ItemStack rocket = new ItemStack(org.bukkit.Material.FIREWORK_ROCKET);
+                    rocket.setItemMeta(firework.getFireworkMeta());
+                    return rocket;
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Could not capture active firework boost for {}: {}", p.getName(), e.getMessage());
+        }
+        return null;
     }
 
     private static void writeItem(DataOutputStream out, ItemStack it) throws Exception {
