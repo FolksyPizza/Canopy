@@ -55,6 +55,7 @@ import com.velocitypowered.proxy.protocol.packet.ClientSettingsPacket;
 import com.velocitypowered.proxy.protocol.packet.ClientboundCookieRequestPacket;
 import com.velocitypowered.proxy.protocol.packet.ClientboundStoreCookiePacket;
 import com.velocitypowered.proxy.protocol.packet.DisconnectPacket;
+import com.velocitypowered.proxy.protocol.packet.JoinGamePacket;
 import com.velocitypowered.proxy.protocol.packet.KeepAlivePacket;
 import com.velocitypowered.proxy.protocol.packet.LegacyPlayerListItemPacket;
 import com.velocitypowered.proxy.protocol.packet.PluginMessagePacket;
@@ -165,6 +166,13 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
   }
 
   @Override
+  public boolean handle(JoinGamePacket packet) {
+    // We receive this if the connection is reconfigured
+    packet.setOnlineMode(serverConn.getPlayer().isOnlineMode());
+    return false; // forward
+  }
+
+  @Override
   public boolean handle(ClientSettingsPacket packet) {
     serverConn.ensureConnected().write(packet);
     return true;
@@ -179,7 +187,9 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
 
   @Override
   public boolean handle(BossBarPacket packet) {
-    if (serverConn.getPlayer().getProtocolVersion().lessThan(ProtocolVersion.MINECRAFT_1_20_2)) {
+    // Before 1.20.2 JoinGame did not clear boss bars; with the no-respawn switch nothing does, so track them too.
+    if (serverConn.getPlayer().getProtocolVersion().lessThan(ProtocolVersion.MINECRAFT_1_20_2)
+        || playerSessionHandler.getCanopyRewriter().active(serverConn.getPlayer().getProtocolVersion())) {
       if (packet.getAction() == BossBarPacket.ADD) {
         playerSessionHandler.getServerBossBars().add(packet.getUuid());
       } else if (packet.getAction() == BossBarPacket.REMOVE) {
@@ -293,8 +303,60 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
     if (bungeecordMessageResponder.process(packet)) {
       return true;
     }
+    if ("canopy:cancelled".equals(packet.getChannel())) {
+      if (serverConn.getPlayer().getConnectedServer() == serverConn && !packet.content().isReadable()) {
+        playerSessionHandler.getCanopyHandover().cancel();
+      }
+      return true;
+    }
+    // Exact shard handover: a switch request flagged exact starts the input cut (the request itself still reaches the
+    // switch plugin below); the destination's ready signal ends it and is not forwarded.
+    if (com.velocitypowered.proxy.connection.client.CanopyHandover.REPAIR_CHANNEL.equals(packet.getChannel())) {
+      if (!packet.content().isReadable()) {
+        playerSessionHandler.getCanopyHandover().armRespawnRepair(serverConn.ensureConnected());
+      } else if (packet.content().readableBytes() == 1
+          && packet.content().getUnsignedByte(packet.content().readerIndex()) == 1) {
+        playerSessionHandler.getCanopyHandover().prepareRespawnRepair(serverConn.ensureConnected());
+      }
+      return true;
+    }
+    if ("canopy:shadow".equals(packet.getChannel())) {
+      // Source: the player approaches the seam. Payload: target (UTF), seam x (double), destination owns east (bool).
+      try {
+        ByteBuf in = packet.content().duplicate();
+        int length = in.readUnsignedShort();
+        String target = in.readCharSequence(length, java.nio.charset.StandardCharsets.UTF_8).toString();
+        double seam = in.readDouble();
+        boolean east = in.readBoolean();
+        playerSessionHandler.getCanopyShadow().request(target, seam, east);
+      } catch (Exception ex) {
+        logger.warn("Malformed canopy:shadow message: {}", ex.getMessage());
+      }
+      return true;
+    }
+    if ("canopy:shadow-end".equals(packet.getChannel())) {
+      playerSessionHandler.getCanopyShadow().close();
+      return true;
+    }
+    if ("canopy:cut-done".equals(packet.getChannel())) {
+      // Source: the exact snapshot has reached the destination. With a shadow armed, it now takes over.
+      playerSessionHandler.getCanopyShadow().promote();
+      return true;
+    }
+    if (com.velocitypowered.proxy.connection.client.CanopyHandover.SWITCH_CHANNEL.equals(packet.getChannel())
+        && com.velocitypowered.proxy.connection.client.CanopyHandover.requestsExact(packet.content())) {
+      playerSessionHandler.getCanopyHandover().begin(serverConn);
+      // With a shadow on the target, the crossing promotes it rather than opening a new connection.
+      String target = com.velocitypowered.proxy.connection.client.CanopyHandover.switchTarget(packet.content());
+      if (target != null && playerSessionHandler.getCanopyShadow().armPromotion(target)) {
+        return true;
+      }
+    } else if (com.velocitypowered.proxy.connection.client.CanopyHandover.READY_CHANNEL.equals(packet.getChannel())) {
+      playerSessionHandler.getCanopyHandover().ready();
+      return true;
+    }
 
-    // Register and unregister packets are simply forwarded to the server as-is.
+    // Register and unregister packets are simply forwarded to the client as-is.
     if (PluginMessageUtil.isRegister(packet) || PluginMessageUtil.isUnregister(packet)) {
       return false;
     }
@@ -454,6 +516,7 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
 
   @Override
   public void handleGeneric(MinecraftPacket packet) {
+    com.velocitypowered.proxy.connection.client.CanopyLifecycleHooks.trace(serverConn.getPlayer().getUniqueId(), "clientbound", packet);
     if (packet instanceof PluginMessagePacket pluginMessage) {
       pluginMessage.retain();
     }
@@ -467,9 +530,37 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
 
   @Override
   public void handleUnknown(ByteBuf buf) {
+    if (playerSessionHandler.getCanopyHandover().consumeRepairReset(
+        buf, serverConn.ensureConnected(), playerSessionHandler.getCanopyRewriter())) return;
+    java.util.List<ByteBuf> instead = playerSessionHandler.getCanopyRewriter()
+        .active(serverConn.getPlayer().getProtocolVersion())
+        ? playerSessionHandler.getCanopyChunkView().onClientbound(buf, playerConnection.getChannel().alloc()) : null;
+    handlePreparedUnknown(buf, instead);
+  }
+
+  public void handlePreparedUnknown(ByteBuf buf, java.util.List<ByteBuf> instead) {
+    com.velocitypowered.proxy.connection.client.CanopyLifecycleHooks.trace(serverConn.getPlayer().getUniqueId(), "clientbound", buf);
     // Experimental no-respawn switch: remap the player's own entity id and track spawned entities.
     // A no-op unless -Dcanopy.noRespawn is set and the client is on the supported protocol.
+    // While the destination applies a handed-over state, its position corrections are confirmed here instead.
+    if (playerSessionHandler.getCanopyHandover().onClientbound(buf, serverConn.ensureConnected())) {
+      return;
+    }
     CanopyEntityRewriter rewriter = playerSessionHandler.getCanopyRewriter();
+    // The gateway owns the client's view: a chunk the client already holds is replaced by its difference.
+    if (rewriter.active(serverConn.getPlayer().getProtocolVersion())) {
+
+      if (instead != null) {
+        for (ByteBuf packet : instead) {
+          playerConnection.delayedWrite(packet);
+        }
+        if (++packetsFlushed >= MAXIMUM_PACKETS_TO_FLUSH) {
+          playerConnection.flush();
+          packetsFlushed = 0;
+        }
+        return;
+      }
+    }
     ByteBuf out = rewriter.active(serverConn.getPlayer().getProtocolVersion())
         ? rewriter.processClientbound(buf)
         : buf;
@@ -492,6 +583,8 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
 
   @Override
   public void exception(Throwable throwable) {
+    com.velocitypowered.proxy.connection.client.CanopyLifecycleHooks.audit(serverConn.getPlayer().getUniqueId(), "backend.exception",
+        "owner", serverConn.getServerInfo().getName(), "error", throwable.getClass().getName());
     exceptionTriggered = true;
     serverConn.getPlayer().handleConnectionException(serverConn.getServer(), throwable,
         !(throwable instanceof ReadTimeoutException));
@@ -503,6 +596,8 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
 
   @Override
   public void disconnected() {
+    com.velocitypowered.proxy.connection.client.CanopyLifecycleHooks.audit(serverConn.getPlayer().getUniqueId(), "backend.disconnected",
+        "owner", serverConn.getServerInfo().getName(), "reason", serverConn.isGracefulDisconnect() ? "graceful" : "unexpected");
     serverConn.getServer().removePlayer(serverConn.getPlayer());
     if (!serverConn.isGracefulDisconnect() && !exceptionTriggered) {
       if (server.getConfiguration().isFailoverOnUnexpectedServerDisconnect()) {

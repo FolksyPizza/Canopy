@@ -39,6 +39,11 @@ the connection. The destination projects the crossing position along the player'
 movement for the time spent switching backends, then restores their view direction and
 momentum.
 
+**Exact handover.** An experimental input-cut path exists, but it is disabled by default. It does not yet serialize
+the cut against every decoded and queued client packet, and an interrupted arrival can leave input held. The approach
+phase preloads chunks; it is not an invisible second gameplay server. Keep exact handover and shadow sessions disabled
+outside isolated tests. See `docs/exact-handover.md` for the current limits.
+
 **Ender pearls.** A pearl thrown across the seam continues its flight on the peer shard.
 When it lands, the peer reports the impact to the thrower's shard, which hands the player
 over to that position. A pearl that lands on the thrower's own shard uses normal server
@@ -64,33 +69,106 @@ sides of the boundary.
 
 ## The Canopy Session Gateway
 
-Crossing the seam means changing backend servers. On a stock proxy that shows two visible
-seams of its own: the "reconfiguring" screen (the client is sent back through the
-configuration phase on every switch since Minecraft 1.20.2) and the "loading terrain"
-screen (a fresh join/respawn tears down and rebuilds the client's world). The Session
-Gateway removes both.
+Crossing the seam means changing backend servers. A stock proxy can show a "reconfiguring"
+screen while it repeats the client configuration phase and a "loading terrain" screen when
+a fresh join or respawn rebuilds the client's world. The Session Gateway provides FAST and
+SEAMLESS modes that aim to avoid those transitions; NORMAL remains the default, and seamless
+behavior requires a supported protocol profile and matching backend configuration.
 
-- **Seamless switch** (`-Dcanopy.seamless=true`) keeps the client in the play phase across
-  the switch, so the reconfiguring screen never appears. Backends are assumed to be
-  configured identically, so the client already holds the registries the config phase would
-  have re-sent.
-- **No-respawn switch** (`-Dcanopy.noRespawn=true`) goes further and sends neither JoinGame
-  nor Respawn, so the client keeps its world and never shows the loading-terrain screen.
-  Because the client stays bound to its original entity ID while each backend allocates IDs
-  independently, the gateway rewrites entity IDs in both directions so the player's own
-  entity — and anything that would otherwise collide with it — stays consistent. This path
-  is version-specific and gated to the pinned protocol.
+Select `-Dcanopy.mode=NORMAL`, `FAST` or `SEAMLESS`. NORMAL uses the full configuration
+and JoinGame/Respawn transition. FAST skips redundant configuration. SEAMLESS preserves
+the client world without a switch-time JoinGame or Respawn and translates backend-local
+entity IDs. Configuration reuse requires matching configured fingerprints; unsupported
+SEAMLESS transitions are rejected unless a fallback is explicitly configured.
 
-The two flags are independent and off by default; with neither set the gateway behaves like
-the upstream proxy. See `docs/seamless-switch.md` for the design and `session-gateway/` for
-the code.
+The current gateway targets protocols 771 through 777 (1.21.6 through 26.3), with
+version-specific packet tables. Complete vanilla parity and client/server combinations
+remain under verification. See [Session Gateway](session-gateway/README.md) for modes,
+compatibility requirements, parallel serving and remaining limitations.
+
+## Managed player lifecycle
+
+Managed sessions are opt-in. The first managed admission imports the selected backend's native player file;
+existing networks must select or migrate the authoritative bootstrap copy. CSG opens and closes the logical session through authenticated control
+endpoints independent of the player's backend connection. All managed shards share one MariaDB database
+and control secret. Backend join/quit during handoff does not mark the player offline.
+
+Managed handoffs persist player snapshots and ownership revisions, but the experimental exact input-cut path does not
+yet establish a complete packet barrier. Promotion records the destination's applied snapshot and a new authority
+epoch. Death and real respawn advance a separate life revision and the authority epoch;
+old saves cannot overwrite the new life. Logout persists the final owner's snapshot before admitting a
+replacement session. A stopped backend can finalize only from its last durable checkpoint after lease expiry;
+unwritten changes cannot be recovered.
+
+Bed/anchor references retain global world/block coordinates and forced-spawn policy. CSG moves a dead
+attachment to the block's owner before forwarding the native respawn request. Vanilla validates the spawn
+and consumes the charge there. Broken-spawn fallback retains its resolved position and routes authority to
+that position's owner. This genuine respawn is distinct from a hidden stale-death repair during an alive
+seamless handoff.
+
+Configure each shard's `session` block, including its gateway server name, database, control bind/port and
+shared secret. Supply `owned-chunks` as `world,chunkX,chunkZ` entries and set the same `default-spawn-owner`
+on every shard. Entries bootstrap `canopy_chunk_owners`; conflicting owners are rejected. This directory
+supports spawn lookup by chunk set. Walking still uses the configured X seam; directory seeding does not
+perform repartitioning. World names, dimensions, gamerules and world-spawn settings must agree across shards.
+
+On-demand zero-downtime updates remain a design proposal. Managed sessions persist player state, but Canopy does not
+yet checkpoint and replay a complete world or launch an update standby. See [On-demand updates](docs/on-demand-updates.md).
+
+Create `plugins/canopyswitch/session.properties` on CSG:
+
+```properties
+enabled=true
+gateway-id=gateway-a
+directory=alpha
+backend.alpha=http://127.0.0.1:50151
+backend.beta=http://127.0.0.1:50152
+shared-secret=change_me_with_a_random_value
+```
+
+`directory` names the preferred managed endpoint; directory calls can use another configured endpoint when
+it is unavailable. Owner-specific calls still reach the actual simulation owner. Keep control HTTP on a
+trusted private network or use TLS. Deploy matching gateway/plugin builds together; stock Velocity lacks
+the lifecycle input hooks. Shadow login is disabled for managed sessions. Full native state, pearl lifecycle,
+all failure cases and the client/backend version matrix still need qualification.
+
+## Audit logging
+
+CSG and managed shards write structured incident metadata to `audit/events.jsonl` in their plugin data
+folders. Records include UTC time, process run ID, audit sequence, player/session/transfer IDs, authority
+and life revisions, control request IDs, outcomes, durations and failure classes. Lifecycle, durable saves,
+leases/storage failures, cancellation, protocol selection, input gating, chunk-view handoff summaries,
+serving failures and experimental shadow transitions are recorded. UUIDs are retained for correlation;
+credentials, packet bodies, inventory contents, chat and exception messages are excluded.
+
+Gateway settings live in `plugins/canopyswitch/session.properties`:
+
+```properties
+audit.enabled=true
+audit.max-bytes=16777216
+audit.retained-files=8
+audit.queue-capacity=4096
+audit.packet-trace=false
+```
+
+Managed shard equivalents live under `session.audit` in `config.yml`. Changes require restart.
+Packet trace adds play-packet IDs/types, direction and size; it does not capture payloads. Enable it for
+focused incident reproduction: high-volume tracing can fill the bounded queue. The default keeps an
+active 16 MiB file plus eight rotated files per process. Files use owner-only permissions on POSIX systems.
+Keep these runtime logs private and out of source control.
+
+The writer forces buffered data to disk roughly once per second while healthy and drains for up to five
+seconds on graceful shutdown. Queue saturation or disk failure emits a console warning and an `audit.gap`
+record when writing recovers. Abrupt process termination can lose pending records; this diagnostic journal
+is not a write-ahead transaction log, an exact gameplay replay, or a tamper-proof record.
 
 ## Building
 
-Requires JDK 21 and Maven; the Session Gateway additionally uses its own Gradle build.
+Backend and CanopySwitch builds require JDK 21 and Maven. The Session Gateway requires
+Java 25 and its own Gradle build.
 
 ```sh
-mvn package                               # Canopy plugin -> target/canopy-*.jar
+mvn install                               # Canopy plugin and shared session classifier -> target/canopy-*.jar
 mvn -f velocity-plugin/pom.xml package    # CanopySwitch  -> velocity-plugin/target/*.jar
 ```
 
@@ -110,7 +188,7 @@ A minimal cluster is two Paper/Folia backends behind one Session Gateway.
    address in `shard.peers`, and the `transfer` section (boundary, buffer, `owns`,
    `peer-server`, ports).
 4. Start the gateway with the switch behaviour you want, for example
-   `-Dcanopy.seamless=true -Dcanopy.noRespawn=true`.
+   `-Dcanopy.mode=SEAMLESS`, with matching configuration fingerprints on both shards.
 
 Every option is documented inline in `src/main/resources/config.yml`.
 
@@ -137,8 +215,9 @@ you to the peer.
 ## Limitations
 
 - Seam mirroring covers block state only — not tile-entity contents or lighting.
-- The no-respawn switch is tied to a single protocol version and does not reset per-world
-  client state such as scoreboards and teams on a switch; identical backends avoid this in
-  practice.
+- The gateway has explicit packet profiles for protocols 771–777, but support across all
+  client/backend combinations is unverified. The no-respawn switch does not reset every
+  per-world client state such as scoreboards and teams; matching backends reduce configuration
+  differences but do not prove complete parity.
 - Runtime repartitioning is not implemented. Changing which shard owns a region while the
   cluster runs, including merging region files between processes, is future work.

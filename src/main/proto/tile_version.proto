@@ -1,7 +1,7 @@
 syntax = "proto3";
 
 option java_multiple_files = true;
-option java_package = "com.folypizza.canopy.proto";
+option java_package = "com.folksypizza.canopy.proto";
 
 // Tile version tracking for halo invalidation (Phase 1)
 service TileVersionService {
@@ -61,6 +61,16 @@ service ShardCoordinationService {
     rpc FinishPearl(PearlImpact) returns (PearlAck);
     // Pull block edits in a near-seam strip for halo mirroring.
     rpc GetHaloEdits(HaloEditsQuery) returns (HaloEdits);
+    // Ghost phase: a player is approaching the seam; prepare their predicted landing (chunks).
+    rpc PrepareArrival(ArrivalHint) returns (PlayerStateAck);
+}
+
+message ArrivalHint {
+    string uuid = 1;
+    string world = 2;
+    double x = 3;   // predicted landing
+    double y = 4;
+    double z = 5;
 }
 
 message PlayerStatePush {

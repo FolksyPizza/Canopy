@@ -24,8 +24,8 @@ import java.util.HashSet;
 import java.util.Set;
 
 /**
- * Full entity-id translation for the "no respawn" seamless server switch
- * ({@code -Dcanopy.noRespawn=true}).
+ * Entity-id translation for the "no respawn" seamless server switch
+ * ({@code -Dcanopy.mode=SEAMLESS}).
  *
  * <p>Velocity's normal fast switch sends a fresh JoinGame + Respawn on every backend change, which
  * resets the client's world (the "loading terrain" screen). The no-respawn path skips both, so the
@@ -50,16 +50,16 @@ import java.util.Set;
  * <p>Spawned entities are also tracked (by the id the client sees) so the previous backend's
  * entities can be despawned in one Remove-Entities packet at switch, since no Respawn clears them.</p>
  *
- * <p>Packet ids and layouts are those of protocol 774 (Minecraft 1.21.11); the rewriter is inert on
- * any other protocol. Every parse is wrapped so a malformed buffer is forwarded untouched rather
+ * <p>Packet handling uses canonical 1.21.11 IDs translated through explicit version tables; it is inert on
+ * unknown protocols. Every parse is wrapped so a malformed buffer is forwarded untouched rather
  * than corrupting the stream.</p>
  */
 public final class CanopyEntityRewriter {
 
-  private static final int SUPPORTED_PROTOCOL = 774;
-  private static final boolean PROPERTY_ENABLED = Boolean.getBoolean("canopy.noRespawn");
+  private volatile com.velocitypowered.proxy.connection.client.CanopyProtocolProfile profile;
+  private boolean enabled = true;
 
-  // --- Clientbound PLAY packet ids (protocol 774) ---
+  // --- Canonical clientbound PLAY packet IDs (protocol 774), mapped to each wire protocol ---
   private static final int CB_SPAWN_ENTITY = 0x01;
   private static final int CB_ANIMATION = 0x02;
   private static final int CB_BLOCK_BREAK_ANIMATION = 0x05;
@@ -85,8 +85,18 @@ public final class CanopyEntityRewriter {
   private static final int CB_ENTITY_TELEPORT = 0x7b;
   private static final int CB_ENTITY_UPDATE_ATTRIBUTES = 0x81;
   private static final int CB_ENTITY_EFFECT = 0x82;
+  // Per-backend client state that a respawn-free switch would otherwise leave behind.
+  private static final int CB_SET_OBJECTIVE = 0x68;          // name, action (0 add, 1 remove, 2 update)
+  private static final int CB_SET_PLAYER_TEAM = 0x6b;        // name, mode (0 add, 1 remove, ...)
+  private static final int CB_GAME_EVENT = 0x26;
+  private static final int CB_SET_CHUNK_CACHE_RADIUS = 0x5d;
+  private static final int CB_SET_SIMULATION_DISTANCE = 0x6d;
+  private static final int CB_CLEAR_TITLES = 0x0e;
+  private static final int GAME_EVENT_CHANGE_GAME_MODE = 3;
+  // Respawn is encode-only in the proxy's registry, so a backend's world change arrives here as a raw packet.
+  private static final int CB_RESPAWN = 0x50;                 // dimension type (varint), world name (string), ...
 
-  // --- Serverbound PLAY packet ids (protocol 774) ---
+  // --- Canonical serverbound PLAY packet IDs (protocol 774), mapped to each wire protocol ---
   private static final int SB_QUERY_ENTITY_NBT = 0x18;       // transactionId then entityId
   private static final int SB_USE_ENTITY = 0x19;             // target leads
   private static final int SB_PICK_ITEM_FROM_ENTITY = 0x24;
@@ -97,10 +107,36 @@ public final class CanopyEntityRewriter {
   private int clientSelfId;
   private int backendSelfId;
   private final Set<Integer> tracked = new HashSet<>();
+  private final Set<String> objectives = new java.util.LinkedHashSet<>();
+  private final Set<String> teams = new java.util.LinkedHashSet<>();
+  private final Set<Integer> selfEffects = new java.util.LinkedHashSet<>();
+  // The client's current world: dimension type id and world name, from the first join and every respawn since.
+  private int worldType = Integer.MIN_VALUE;
+  private String worldName;
+
+  public void noteWorld(int dimensionType, String name) {
+    this.worldType = dimensionType;
+    this.worldName = name;
+  }
+
+  /** A respawn-free switch keeps the client's world, so it is only correct into the same world and dimension type. */
+  public boolean sameWorld(int dimensionType, String name) {
+    return dimensionType == worldType && java.util.Objects.equals(name, worldName);
+  }
 
   /** True when the no-respawn path may run for this player's protocol. */
   public boolean active(ProtocolVersion version) {
-    return PROPERTY_ENABLED && version.getProtocol() == SUPPORTED_PROTOCOL;
+    return enabled && supports(version);
+  }
+
+  public void enabled(boolean enabled) { this.enabled = enabled; }
+  public boolean enabled() { return enabled; }
+  public Integer clientEntityId() { return initialized ? clientSelfId : null; }
+  public Integer backendEntityId() { return initialized ? backendSelfId : null; }
+
+  public boolean supports(ProtocolVersion version) {
+    profile = com.velocitypowered.proxy.connection.client.CanopyProtocolProfile.find(version.getProtocol());
+    return profile != null;
   }
 
   /** Records the entity id the client was first bound to (its own player entity). */
@@ -109,6 +145,9 @@ public final class CanopyEntityRewriter {
     this.backendSelfId = entityId;
     this.initialized = true;
     this.tracked.clear();
+    this.objectives.clear();
+    this.teams.clear();
+    this.selfEffects.clear();
   }
 
   public boolean isInitialized() {
@@ -149,7 +188,7 @@ public final class CanopyEntityRewriter {
   public ByteBuf processClientbound(ByteBuf buf) {
     int start = buf.readerIndex();
     try {
-      int packetId = ProtocolUtils.readVarInt(buf);
+      int packetId = profile.clientbound(ProtocolUtils.readVarInt(buf));
       int afterId = buf.readerIndex();
 
       switch (packetId) {
@@ -167,6 +206,48 @@ public final class CanopyEntityRewriter {
         }
         case CB_ENTITY_DESTROY:
           return rewriteDestroy(buf, start, afterId);
+        case CB_RESPAWN: {
+          int type = ProtocolUtils.readVarInt(buf);
+          noteWorld(type, ProtocolUtils.readString(buf));
+          buf.readerIndex(start);
+          return buf;
+        }
+        case CB_SET_OBJECTIVE: {
+          String name = ProtocolUtils.readString(buf);
+          byte action = buf.readByte();
+          if (action == 0) {
+            objectives.add(name);
+          } else if (action == 1) {
+            objectives.remove(name);
+          }
+          buf.readerIndex(start);
+          return buf;
+        }
+        case CB_SET_PLAYER_TEAM: {
+          String name = ProtocolUtils.readString(buf);
+          byte mode = buf.readByte();
+          if (mode == 0) {
+            teams.add(name);
+          } else if (mode == 1) {
+            teams.remove(name);
+          }
+          buf.readerIndex(start);
+          return buf;
+        }
+        case CB_ENTITY_EFFECT:
+        case CB_REMOVE_ENTITY_EFFECT: {
+          int id = ProtocolUtils.readVarInt(buf);
+          int effect = ProtocolUtils.readVarInt(buf);
+          if (f(id) == clientSelfId) {
+            if (packetId == CB_ENTITY_EFFECT) {
+              selfEffects.add(effect);
+            } else {
+              selfEffects.remove(effect);
+            }
+          }
+          buf.readerIndex(afterId);
+          return rewriteLeadingVarint(buf, start, afterId);
+        }
         case CB_SET_PASSENGERS:
           return rewritePassengers(buf, start, afterId);
         case CB_COLLECT:
@@ -175,10 +256,20 @@ public final class CanopyEntityRewriter {
           return rewriteI32Fields(buf, start, afterId, 1);
         case CB_ATTACH_ENTITY:
           return rewriteI32Fields(buf, start, afterId, 2);
+        case CB_DAMAGE_EVENT:
+          return rewriteDamage(buf, start, afterId);
+        case 0x72: // entity sound: registry holder, category, entity id
+          if (ProtocolUtils.readVarInt(buf) == 0) {
+            ProtocolUtils.readString(buf);
+            if (buf.readBoolean()) { buf.skipBytes(4); }
+          }
+          ProtocolUtils.readVarInt(buf);
+          return rewriteLeadingVarint(buf, start, afterId);
         // Every packet whose first field is a single varint entity id.
+        case 0x85: // projectile power
+        case 0x900: // 26.3 swing animation
         case CB_ANIMATION:
         case CB_BLOCK_BREAK_ANIMATION:
-        case CB_DAMAGE_EVENT:
         case CB_SYNC_ENTITY_POSITION:
         case CB_HURT_ANIMATION:
         case CB_REL_ENTITY_MOVE:
@@ -186,7 +277,6 @@ public final class CanopyEntityRewriter {
         case CB_MOVE_MINECART:
         case CB_ENTITY_LOOK:
         case CB_DEATH_COMBAT_EVENT:
-        case CB_REMOVE_ENTITY_EFFECT:
         case CB_ENTITY_HEAD_ROTATION:
         case CB_CAMERA:
         case CB_ENTITY_METADATA:
@@ -194,7 +284,6 @@ public final class CanopyEntityRewriter {
         case CB_ENTITY_EQUIPMENT:
         case CB_ENTITY_TELEPORT:
         case CB_ENTITY_UPDATE_ATTRIBUTES:
-        case CB_ENTITY_EFFECT:
           return rewriteLeadingVarint(buf, start, afterId);
         default:
           buf.readerIndex(start);
@@ -213,15 +302,24 @@ public final class CanopyEntityRewriter {
   public ByteBuf processServerbound(ByteBuf buf) {
     int start = buf.readerIndex();
     try {
-      int packetId = ProtocolUtils.readVarInt(buf);
+      int packetId = profile.serverbound(ProtocolUtils.readVarInt(buf));
       int afterId = buf.readerIndex();
 
       switch (packetId) {
+        case 0x900: // 26.x attack
         case SB_USE_ENTITY:
         case SB_PICK_ITEM_FROM_ENTITY:
         case SB_ENTITY_ACTION:
         case SB_UPDATE_CMD_MINECART:
           return rewriteLeadingVarint(buf, start, afterId);
+        case 0x901: { // 26.x spectator action uses an optional entity id encoded as id + 1
+          int fieldStart = buf.readerIndex();
+          int encoded = ProtocolUtils.readVarInt(buf);
+          int fieldEnd = buf.readerIndex();
+          int mapped = encoded == 0 ? 0 : f(encoded - 1) + 1;
+          if (mapped == encoded) { buf.readerIndex(start); return buf; }
+          return spliceVarint(buf, start, fieldStart, fieldEnd, mapped);
+        }
         case SB_QUERY_ENTITY_NBT:
           return rewriteSecondVarint(buf, start, afterId);
         default:
@@ -237,6 +335,30 @@ public final class CanopyEntityRewriter {
   // ---------------------------------------------------------------------------------------------
   // Field rewriters
   // ---------------------------------------------------------------------------------------------
+
+  private ByteBuf rewriteDamage(ByteBuf buf, int start, int afterId) {
+    int victim = ProtocolUtils.readVarInt(buf);
+    int type = ProtocolUtils.readVarInt(buf);
+    int cause = ProtocolUtils.readVarInt(buf);
+    int direct = ProtocolUtils.readVarInt(buf);
+    int mappedVictim = f(victim);
+    int mappedCause = cause == 0 ? 0 : f(cause - 1) + 1;
+    int mappedDirect = direct == 0 ? 0 : f(direct - 1) + 1;
+    int end = buf.readerIndex();
+    if (victim == mappedVictim && cause == mappedCause && direct == mappedDirect) {
+      buf.readerIndex(start);
+      return buf;
+    }
+    ByteBuf out = buf.alloc().buffer();
+    out.writeBytes(buf, start, afterId - start);
+    ProtocolUtils.writeVarInt(out, mappedVictim);
+    ProtocolUtils.writeVarInt(out, type);
+    ProtocolUtils.writeVarInt(out, mappedCause);
+    ProtocolUtils.writeVarInt(out, mappedDirect);
+    out.writeBytes(buf, end, buf.writerIndex() - end);
+    buf.readerIndex(start);
+    return out;
+  }
 
   private ByteBuf rewriteLeadingVarint(ByteBuf buf, int start, int afterId) {
     int fieldStart = buf.readerIndex();
@@ -286,6 +408,7 @@ public final class CanopyEntityRewriter {
   private ByteBuf rewritePassengers(ByteBuf buf, int start, int afterId) {
     int vehicle = ProtocolUtils.readVarInt(buf);
     int count = ProtocolUtils.readVarInt(buf);
+    if (count < 0 || count > buf.readableBytes()) { throw new IllegalArgumentException("passenger count"); }
     int[] passengers = new int[count];
     boolean needsRewrite = f(vehicle) != vehicle;
     for (int i = 0; i < count; i++) {
@@ -313,6 +436,7 @@ public final class CanopyEntityRewriter {
 
   private ByteBuf rewriteDestroy(ByteBuf buf, int start, int afterId) {
     int count = ProtocolUtils.readVarInt(buf);
+    if (count < 0 || count > buf.readableBytes()) { throw new IllegalArgumentException("entity count"); }
     int[] ids = new int[count];
     boolean needsRewrite = false;
     for (int i = 0; i < count; i++) {
@@ -376,8 +500,65 @@ public final class CanopyEntityRewriter {
    * Builds a raw Remove-Entities (0x4b) payload for the given client-side ids, ready to write
    * straight to the client connection (no frame-length prefix — the outbound pipeline adds it).
    */
+  /**
+   * Writes one raw packet per piece of client state the current backend created (scoreboard objectives, teams,
+   * effects on the player) that removes it, then forgets it. Sent on a switch, before the new backend's own state.
+   */
+  public java.util.List<ByteBuf> drainStateResets(io.netty.buffer.ByteBufAllocator alloc) {
+    java.util.List<ByteBuf> out = new java.util.ArrayList<>();
+    for (String name : objectives) {
+      ByteBuf b = alloc.buffer();
+      ProtocolUtils.writeVarInt(b, profile.clientboundWire(CB_SET_OBJECTIVE));
+      ProtocolUtils.writeString(b, name);
+      b.writeByte(1);
+      out.add(b);
+    }
+    for (String name : teams) {
+      ByteBuf b = alloc.buffer();
+      ProtocolUtils.writeVarInt(b, profile.clientboundWire(CB_SET_PLAYER_TEAM));
+      ProtocolUtils.writeString(b, name);
+      b.writeByte(1);
+      out.add(b);
+    }
+    for (int effect : selfEffects) {
+      ByteBuf b = alloc.buffer();
+      ProtocolUtils.writeVarInt(b, profile.clientboundWire(CB_REMOVE_ENTITY_EFFECT));
+      ProtocolUtils.writeVarInt(b, clientSelfId);
+      ProtocolUtils.writeVarInt(b, effect);
+      out.add(b);
+    }
+    objectives.clear();
+    teams.clear();
+    selfEffects.clear();
+    return out;
+  }
+
+  /** What the skipped join packet would have set: game mode, view and simulation distance; titles cleared. */
+  public java.util.List<ByteBuf> buildJoinState(io.netty.buffer.ByteBufAllocator alloc, int gameMode, int viewDistance,
+      int simulationDistance) {
+    java.util.List<ByteBuf> out = new java.util.ArrayList<>();
+    ByteBuf mode = alloc.buffer();
+    ProtocolUtils.writeVarInt(mode, profile.clientboundWire(CB_GAME_EVENT));
+    mode.writeByte(GAME_EVENT_CHANGE_GAME_MODE);
+    mode.writeFloat(gameMode);
+    out.add(mode);
+    ByteBuf view = alloc.buffer();
+    ProtocolUtils.writeVarInt(view, profile.clientboundWire(CB_SET_CHUNK_CACHE_RADIUS));
+    ProtocolUtils.writeVarInt(view, viewDistance);
+    out.add(view);
+    ByteBuf sim = alloc.buffer();
+    ProtocolUtils.writeVarInt(sim, profile.clientboundWire(CB_SET_SIMULATION_DISTANCE));
+    ProtocolUtils.writeVarInt(sim, simulationDistance);
+    out.add(sim);
+    ByteBuf titles = alloc.buffer();
+    ProtocolUtils.writeVarInt(titles, profile.clientboundWire(CB_CLEAR_TITLES));
+    titles.writeBoolean(true);
+    out.add(titles);
+    return out;
+  }
+
   public ByteBuf buildEntityDestroy(ByteBuf out, int[] ids) {
-    ProtocolUtils.writeVarInt(out, CB_ENTITY_DESTROY);
+    ProtocolUtils.writeVarInt(out, profile.clientboundWire(CB_ENTITY_DESTROY));
     ProtocolUtils.writeVarInt(out, ids.length);
     for (int id : ids) {
       ProtocolUtils.writeVarInt(out, id);

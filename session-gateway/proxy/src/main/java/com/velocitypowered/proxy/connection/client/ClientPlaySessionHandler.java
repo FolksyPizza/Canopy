@@ -26,6 +26,7 @@ import com.velocitypowered.api.event.player.CookieReceiveEvent;
 import com.velocitypowered.api.event.player.PlayerChannelRegisterEvent;
 import com.velocitypowered.api.event.player.PlayerChannelUnregisterEvent;
 import com.velocitypowered.api.event.player.PlayerClientBrandEvent;
+import com.velocitypowered.api.event.player.PlayerClientLoadedWorldEvent;
 import com.velocitypowered.api.event.player.TabCompleteEvent;
 import com.velocitypowered.api.event.player.configuration.PlayerEnteredConfigurationEvent;
 import com.velocitypowered.api.network.ProtocolVersion;
@@ -42,6 +43,7 @@ import com.velocitypowered.proxy.connection.player.resourcepack.ResourcePackResp
 import com.velocitypowered.proxy.protocol.MinecraftPacket;
 import com.velocitypowered.proxy.protocol.StateRegistry;
 import com.velocitypowered.proxy.protocol.netty.MinecraftDecoder;
+import com.velocitypowered.proxy.connection.registry.DimensionInfo;
 import com.velocitypowered.proxy.protocol.packet.BossBarPacket;
 import com.velocitypowered.proxy.protocol.packet.ClientSettingsPacket;
 import com.velocitypowered.proxy.protocol.packet.JoinGamePacket;
@@ -50,6 +52,7 @@ import com.velocitypowered.proxy.protocol.packet.PluginMessagePacket;
 import com.velocitypowered.proxy.protocol.packet.ResourcePackResponsePacket;
 import com.velocitypowered.proxy.protocol.packet.RespawnPacket;
 import com.velocitypowered.proxy.protocol.packet.ServerboundCookieResponsePacket;
+import com.velocitypowered.proxy.protocol.packet.ServerboundPlayerLoadedPacket;
 import com.velocitypowered.proxy.protocol.packet.TabCompleteRequestPacket;
 import com.velocitypowered.proxy.protocol.packet.TabCompleteResponsePacket;
 import com.velocitypowered.proxy.protocol.packet.TabCompleteResponsePacket.Offer;
@@ -132,6 +135,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
   private int failedTabCompleteAttempts;
 
   // Per-connection state for the experimental no-respawn seamless switch (-Dcanopy.noRespawn).
+  private CanopyHandover canopyHandover;
   private final com.velocitypowered.proxy.connection.backend.CanopyEntityRewriter canopyRewriter =
       new com.velocitypowered.proxy.connection.backend.CanopyEntityRewriter();
 
@@ -144,6 +148,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
   public ClientPlaySessionHandler(VelocityServer server, ConnectedPlayer player) {
     this.player = player;
     this.server = server;
+    canopyRewriter.enabled(false);
 
     if (this.player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_19_3)) {
       this.chatHandler = new SessionChatHandler(this.player, this.server);
@@ -192,6 +197,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
 
   @Override
   public void deactivated() {
+    if (canopyHandover != null) canopyHandover.abandon();
     player.discardChatQueue();
     PluginMessagePacket message;
     while ((message = loginPluginMessages.poll()) != null) {
@@ -243,6 +249,20 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
     }
     player.getConnectedServer().ensureConnected().write(packet);
     return true; // will forward onto the server
+  }
+
+  @Override
+  public boolean handle(ServerboundPlayerLoadedPacket packet) {
+    VelocityServerConnection serverConnection = player.getConnectedServer();
+    if (serverConnection == null) {
+      // No server connection yet, probably transitioning - shouldn't be possible with a vanilla client
+      return true;
+    }
+    if (!serverConnection.isClientLoaded()) {
+      serverConnection.setClientLoaded(true);
+      server.getEventManager().fireAndForget(new PlayerClientLoadedWorldEvent(player));
+    }
+    return false;
   }
 
   @Override
@@ -510,6 +530,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
 
   @Override
   public void handleGeneric(MinecraftPacket packet) {
+    CanopyLifecycleHooks.trace(player.getUniqueId(), "serverbound", packet);
     VelocityServerConnection serverConnection = player.getConnectedServer();
     if (serverConnection == null) {
       // No server connection yet, probably transitioning.
@@ -531,9 +552,14 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
 
   @Override
   public void handleUnknown(ByteBuf buf) {
+    CanopyLifecycleHooks.trace(player.getUniqueId(), "serverbound", buf);
     VelocityServerConnection serverConnection = player.getConnectedServer();
     if (serverConnection == null) {
       // No server connection yet, probably transitioning.
+      return;
+    }
+    // An exact shard handover holds the player's input back between the cut and the destination being ready.
+    if (getCanopyHandover().onServerbound(buf)) {
       return;
     }
 
@@ -556,6 +582,11 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
 
   @Override
   public void disconnected() {
+    if (canopyHandover != null) canopyHandover.abandon();
+    if (canopyRewriter.isInitialized()) {
+      logger.info("Canopy chunk view for {}: {}", player.getUsername(), canopyChunkView.stats());
+    }
+    if (canopyServing != null) canopyServing.close();
     player.teardown();
   }
 
@@ -591,7 +622,9 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
     if (serverConn != null) {
       MinecraftConnection smc = serverConn.getConnection();
       if (smc != null) {
-        smc.setAutoReading(writable);
+        smc.setAutoReading(writable && (!(smc.getActiveSessionHandler()
+            instanceof com.velocitypowered.proxy.connection.backend.CanopyServingSessionHandler serving)
+            || serving.canRead()));
       }
     }
   }
@@ -612,17 +645,21 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
       // Send keep alive to try to avoid timeouts
       player.sendKeepAlive();
 
-      // Config state clears everything in the client. No need to clear later.
-      spawned = false;
-      player.clearPlayerListHeaderAndFooterSilent();
-      player.getTabList().clearAllSilent();
-      if (player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_20_2)) {
-        player.getBossBarManager().dropPackets();
-      } else {
-        serverBossBars.clear();
-      }
     }
 
+    // A same-backend refresh closes the old connection before the new login. Configuration still
+    // clears the client, so reset its spawn and presentation state even when that connection is gone.
+    spawned = false;
+    player.clearPlayerListHeaderAndFooterSilent();
+    player.getTabList().clearAllSilent();
+    if (player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_20_2)) {
+      player.getBossBarManager().dropPackets();
+    } else {
+      serverBossBars.clear();
+    }
+
+    getCanopyHandover().abandon();
+    canopyChunkView.clear();
     player.switchToConfigState();
 
     return configSwitchFuture;
@@ -636,7 +673,14 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
    * @param destination the new server we are connecting to
    */
   public void handleBackendJoinGame(JoinGamePacket joinGame, VelocityServerConnection destination) {
+    CanopyLifecycleHooks.audit(player.getUniqueId(), "world.backend_join", "target", destination.getServerInfo().getName(),
+        "mode", destination.getCanopyMode().name(), "protocol", player.getProtocolVersion().getProtocol());
     final MinecraftConnection serverMc = destination.ensureConnected();
+    if (destination.getCanopyMode() == CanopySwitchPolicy.Mode.NORMAL) {
+      CanopySwitchPolicy.finishRefresh(player.getUniqueId());
+    }
+    canopyRewriter.enabled(CanopySwitchPolicy.requested(player.getUniqueId())
+        == CanopySwitchPolicy.Mode.SEAMLESS);
 
     if (!spawned) {
       // The player wasn't spawned in yet, so we don't need to do anything special. Just send
@@ -646,9 +690,11 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
       // Required for Legacy Forge
       player.getPhase().onFirstJoin(player);
       // Bind the no-respawn rewriter to the entity id the client is now locked to.
-      if (canopyRewriter.active(player.getProtocolVersion())) {
+      if (canopyRewriter.supports(player.getProtocolVersion())) {
+        canopyChunkView.protocol(player.getProtocolVersion().getProtocol());
         canopyRewriter.initSelf(joinGame.getEntityId());
       }
+      canopyNoteWorld(joinGame);
     } else {
       // Clear tab list to avoid duplicate entries
       player.getTabList().clearAll();
@@ -657,11 +703,30 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
       // entity IDs and send new dimension information.
       if (player.getConnection().getType() == ConnectionTypes.LEGACY_FORGE) {
         this.doSafeClientServerSwitch(joinGame);
-      } else if (canopyRewriter.active(player.getProtocolVersion())
-          && canopyRewriter.isInitialized()) {
-        this.doNoRespawnClientServerSwitch(joinGame);
+      } else if (destination.getCanopyMode() == CanopySwitchPolicy.Mode.SEAMLESS
+          && canopyRewriter.active(player.getProtocolVersion()) && canopyRewriter.isInitialized()) {
+        // The configuration phase that would reset the client never runs: clear the old backend's state first.
+        canopyResetBackendState();
+        if (canopySameWorld(joinGame)) {
+          this.doNoRespawnClientServerSwitch(joinGame);
+          // The client never shows a loading screen here, so it never reports itself loaded, and since 1.21.4 a
+          // backend ignores an unloaded player's movement (for up to three seconds). Report it on the client's behalf.
+          serverMc.write(ServerboundPlayerLoadedPacket.INSTANCE);
+          destination.setClientLoaded(true);
+          getCanopyHandover().arrived();
+        } else {
+          throw new IllegalStateException("SEAMLESS client world changed during transition");
+        }
+        canopyNoteWorld(joinGame);
       } else {
+        getCanopyHandover().abandon();
         this.doFastClientServerSwitch(joinGame);
+        // An explicitly selected fallback gives the client a fresh self id and world.
+        if (canopyRewriter.supports(player.getProtocolVersion())) {
+          canopyRewriter.initSelf(joinGame.getEntityId());
+          canopyNoteWorld(joinGame);
+          canopyChunkView.clear();
+        }
       }
     }
 
@@ -743,7 +808,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
    * previous backend spawned is despawned in a single Remove-Entities packet so its ids cannot
    * collide with the new backend's, and the rewriter is pointed at the new backend so packets
    * referring to the player's own entity are remapped to the id the client is locked to. Guarded to
-   * protocol 774 by {@link CanopyEntityRewriter#active}.</p>
+   * explicit protocol profiles by {@link CanopyEntityRewriter#active}.</p>
    */
   private void doNoRespawnClientServerSwitch(JoinGamePacket joinGame) {
     int[] stale = canopyRewriter.drainTracked();
@@ -752,8 +817,68 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
       canopyRewriter.buildEntityDestroy(destroy, stale);
       player.getConnection().delayedWrite(destroy);
     }
+    // JoinGame is not sent, so apply what it carries that the new backend does not resend on its own.
+    for (io.netty.buffer.ByteBuf packet : canopyRewriter.buildJoinState(player.getConnection().getChannel().alloc(),
+        joinGame.getGamemode(), joinGame.getViewDistance(), joinGame.getSimulationDistance())) {
+      player.getConnection().delayedWrite(packet);
+    }
     // Point self-id remapping at the new backend; the client keeps its original entity id.
     canopyRewriter.onSwitch(joinGame.getEntityId());
+  }
+
+  private void canopyNoteWorld(JoinGamePacket joinGame) {
+    DimensionInfo info = joinGame.getDimensionInfo();
+    canopyRewriter.noteWorld(joinGame.getDimension(), info == null ? null : info.getLevelName());
+  }
+
+  public boolean canopySameWorld(JoinGamePacket joinGame) {
+    DimensionInfo info = joinGame.getDimensionInfo();
+    return canopyRewriter.sameWorld(joinGame.getDimension(), info == null ? null : info.getLevelName());
+  }
+
+  /** Removes the state the previous backend created on the client: objectives, teams, effects and boss bars. */
+  private void canopyResetBackendState() {
+    for (io.netty.buffer.ByteBuf packet : canopyRewriter.drainStateResets(player.getConnection().getChannel().alloc())) {
+      player.getConnection().delayedWrite(packet);
+    }
+    for (UUID serverBossBar : serverBossBars) {
+      BossBarPacket deletePacket = new BossBarPacket();
+      deletePacket.setUuid(serverBossBar);
+      deletePacket.setAction(BossBarPacket.REMOVE);
+      player.getConnection().delayedWrite(deletePacket);
+    }
+    serverBossBars.clear();
+  }
+
+  private final CanopyChunkView canopyChunkView = new CanopyChunkView();
+  private volatile CanopyServing.Lane canopyServing;
+
+  public synchronized CanopyServing.Lane getCanopyServing() {
+    if (canopyServing == null) canopyServing = CanopyServing.playerLane();
+    return canopyServing;
+  }
+
+  public java.util.UUID getCanopyPlayerId() { return player.getUniqueId(); }
+
+  public MinecraftConnection getCanopyClientConnection() { return player.getConnection(); }
+  private CanopyShadow canopyShadow;
+
+  public CanopyShadow getCanopyShadow() {
+    if (canopyShadow == null) {
+      canopyShadow = new CanopyShadow(server, player, this);
+    }
+    return canopyShadow;
+  }
+
+  public CanopyChunkView getCanopyChunkView() {
+    return canopyChunkView;
+  }
+
+  public CanopyHandover getCanopyHandover() {
+    if (canopyHandover == null) {
+      canopyHandover = new CanopyHandover(player);
+    }
+    return canopyHandover;
   }
 
   public com.velocitypowered.proxy.connection.backend.CanopyEntityRewriter getCanopyRewriter() {

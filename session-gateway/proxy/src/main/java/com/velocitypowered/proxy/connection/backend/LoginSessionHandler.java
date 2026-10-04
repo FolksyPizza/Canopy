@@ -96,7 +96,11 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
           configuration.getForwardingSecret(),
           serverConn.getPlayerRemoteAddressAsString(),
           player.getProtocolVersion(),
-          player.getGameProfile(),
+          // A shadow session tells the destination at login that this player is a ghost (hidden until promoted).
+          serverConn.isCanopyShadow()
+              ? player.getGameProfile().addProperty(
+                  new com.velocitypowered.api.util.GameProfile.Property("canopy:ghost", "1", ""))
+              : player.getGameProfile(),
           player.getIdentifiedKey(),
           requestedForwardingVersion);
 
@@ -149,6 +153,36 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
       return true;
     }
 
+    ConnectedPlayer switchingPlayer = serverConn.getPlayer();
+    var previous = switchingPlayer.getConnectedServer();
+    try {
+      serverConn.setCanopyMode(
+          com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.select(
+              com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.requested(switchingPlayer.getUniqueId()),
+              com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.fallback(),
+              previous == null,
+              previous != null && com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.sameConfiguration(
+                  com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.configurationFingerprint(
+                      previous.getServerInfo().getName()),
+                  com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.configurationFingerprint(
+                      serverConn.getServerInfo().getName())),
+              new CanopyEntityRewriter().supports(switchingPlayer.getProtocolVersion())));
+      com.velocitypowered.proxy.connection.client.CanopyLifecycleHooks.audit(switchingPlayer.getUniqueId(), "protocol.mode_selected",
+          "target", serverConn.getServerInfo().getName(), "mode", serverConn.getCanopyMode().name(),
+          "protocol", switchingPlayer.getProtocolVersion().getProtocol());
+    } catch (IllegalArgumentException | IllegalStateException unsupported) {
+      com.velocitypowered.proxy.connection.client.CanopyLifecycleHooks.audit(switchingPlayer.getUniqueId(), "protocol.mode_rejected",
+          "target", serverConn.getServerInfo().getName(), "error", unsupported.getClass().getName());
+      if (switchingPlayer.getConnection().getActiveSessionHandler() instanceof ClientPlaySessionHandler play) {
+        play.getCanopyHandover().cancel();
+      }
+      resultFuture.complete(ConnectionRequestResults.forDisconnect(
+          DisconnectPacket.create(net.kyori.adventure.text.Component.text(unsupported.getMessage()),
+              switchingPlayer.getProtocolVersion(), StateRegistry.LOGIN), serverConn.getServer()));
+      serverConn.disconnect();
+      return true;
+    }
+
     // The player has been logged on to the backend server, but we're not done yet. There could be
     // other problems that could arise before we get a JoinGame packet from the server.
 
@@ -164,12 +198,9 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
         smc.write(player.getClientSettingsPacket());
       }
       if (player.getConnection().getActiveSessionHandler() instanceof ClientPlaySessionHandler clientPlaySessionHandler) {
-        if (!"false".equalsIgnoreCase(System.getProperty("canopy.seamless", "true"))) {
-          // Canopy seamless switch: keep the client in the PLAY phase. The new backend's
-          // config is consumed proxy-side by ConfigSessionHandler, which then transitions to
-          // the existing respawn-based swap. The client never enters the configuration phase,
-          // so there is no reconfiguration screen — only a chunk reload.
-          // (Assumes identical backend registries, which Canopy operators guarantee.)
+        if (serverConn.getCanopyMode()
+            != com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.Mode.NORMAL) {
+          // The policy admitted configuration reuse before any client transition.
           smc.setAutoReading(true);
         } else {
           smc.setAutoReading(false);

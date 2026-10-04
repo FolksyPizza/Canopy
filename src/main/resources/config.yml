@@ -58,10 +58,40 @@ transfer:
   # Width (blocks) of the near-seam halo strip mirrored from the peer shard, so edits
   # on the far side are visible before you cross.
   halo-width: 16
+  # Exact handover (proxy mode, buffer 0, Canopy Session Gateway with no-respawn): the gateway cuts the player's
+  # input at the crossing, this shard hands over its exact state, and the peer replays the held input. No
+  # projection, no correction on arrival. A proxy without it falls back to the projected handover.
+  exact-handover: false
+  # Ghost phase: while a player heads for the seam within this distance, the peer preloads their landing.
+  ghost:
+    distance: 24
+    interval-ms: 100
+    preload-radius: 2    # chunks around the predicted landing
+    expire-ms: 3000      # released this long after the last hint
+    # max-prepared: players prepared at once (from the guard profile); hints never generate terrain
+  # Abuse guards. A crossing costs the peer a backend join, a state push and chunk traffic; beyond these limits the
+  # seam holds the player on their side with a short notice (never a kick). Pick a profile; any key below overrides it.
+  #   profile   crossings/min  min interval  in flight  peer mspt  hints/s  prepared  pearl cooldown  pearls/s
+  #   off       unlimited      none          unlimited  off        unlimited 256      none            unlimited
+  #   relaxed   20             750 ms        32         60         500      128       250 ms          60
+  #   balanced  8              2000 ms       8          45         200      64        1000 ms         20
+  #   strict    4              4000 ms       4          40         100      32        2000 ms         10
+  guard:
+    profile: relaxed
+    # max-crossings-per-minute: 20   # per player, counting arrivals
+    # min-interval-ms: 750           # per player, between crossings
+    # max-concurrent: 32             # handovers in flight from this shard
+    # peer-max-mspt: 60              # hold crossings while the peer is slower than this (0 turns it off)
+    # max-hints-per-second: 500      # ghost hints from this shard in total
+    # pearl-cooldown-ms: 250         # per thrower, pearls relayed across the seam
+    # max-pearls-per-second: 60      # relayed pearls in total, each direction
 
 # gRPC settings (tile version / shard coordination)
 grpc:
   port: 50051
+  # Shard-to-shard authentication. Without it anyone who can reach this port can push player state; set the same
+  # value on every shard whenever the port is reachable beyond the shard hosts.
+  shared-secret: ""
   max-message-bytes: 67108864  # 64MB
 
 # HTTP metrics endpoint (raw per-region metrics JSON)
@@ -94,3 +124,28 @@ telemetry:
 
 # Logging
 log-level: INFO
+
+# CSG-owned presence and database state. Every managed shard shares this database and secret.
+# Match shard to its gateway server name. The control endpoint is independent of player sockets.
+# HTTP must stay on a trusted private network or behind TLS; do not expose it publicly.
+session:
+  enabled: false
+  shard: ""
+  bind: 127.0.0.1
+  port: 50151
+  shared-secret: ""
+  # Gateway server name that owns the global default spawn; configure consistently across shards.
+  default-spawn-owner: ""
+  # Bootstrap chunk ownership for spawn resolution; entries use world,chunkX,chunkZ.
+  # Conflicts fail startup. This does not migrate or repartition running simulation.
+  owned-chunks: []
+  # Local rotating metadata audit; gameplay threads never write to disk.
+  audit:
+    enabled: true
+    max-bytes: 16777216
+    retained-files: 8
+    queue-capacity: 4096
+  database:
+    url: "jdbc:mariadb://127.0.0.1:3306/canopy"
+    user: ""
+    password: ""

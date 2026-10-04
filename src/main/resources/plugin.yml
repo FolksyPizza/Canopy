@@ -1,5 +1,5 @@
 name: Canopy
-main: com.folypizza.canopy.CanopyPlugin
+main: com.folksypizza.canopy.CanopyPlugin
 version: '@project.version@'
 api-version: '1.21'
 author: anomaly

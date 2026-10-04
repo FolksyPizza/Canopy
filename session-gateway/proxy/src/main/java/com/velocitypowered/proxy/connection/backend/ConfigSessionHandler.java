@@ -83,6 +83,8 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
   private final CompletableFuture<Impl> resultFuture;
 
   private ResourcePackInfo resourcePackToApply;
+  private final com.velocitypowered.proxy.connection.client.CanopyConfiguration canopyConfiguration =
+      new com.velocitypowered.proxy.connection.client.CanopyConfiguration();
 
   private State state;
 
@@ -120,14 +122,10 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
     return false;
   }
 
-  /**
-   * Canopy seamless switch: the client is still in the PLAY phase (it was not moved to
-   * configuration), so backend config packets must not be relayed to it. They are dropped
-   * here — the backends are identical, so the client already holds this data — and the
-   * backend's config is finished proxy-side in {@link #handle(FinishedUpdatePacket)}.
-   */
+  /** A FAST or SEAMLESS destination uses the configuration already held by the client. */
   private boolean canopySeamless() {
-    return !"false".equalsIgnoreCase(System.getProperty("canopy.seamless", "true"))
+    return serverConn.getCanopyMode()
+        != com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.Mode.NORMAL
         && serverConn.getPlayer().getConnection().getActiveSessionHandler()
             instanceof ClientPlaySessionHandler;
   }
@@ -140,12 +138,12 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
 
   @Override
   public boolean handle(KnownPacksPacket packet) {
+    canopyConfiguration.record(packet, serverConn.getPlayer().getProtocolVersion());
     if (canopySeamless()) {
-      // The client is in PLAY and cannot answer the known-packs negotiation. Echo the
-      // backend's known packs straight back so it treats the client as already holding them
-      // (identical backends) and continues its config phase.
-      logger.info("[canopy] echoing known packs to backend for seamless switch");
-      serverConn.ensureConnected().write(packet);
+      // Replay only what this client actually selected during its full configuration.
+      // Advertising every backend pack changes registry payloads for clients that selected none.
+      logger.info("[canopy] replaying client known-pack selection for seamless switch");
+      serverConn.ensureConnected().write(serverConn.getPlayer().getCanopyKnownPacks());
       return true;
     }
     return false; // normal path: forward to the client, which replies
@@ -153,6 +151,7 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
 
   @Override
   public boolean handle(TagsUpdatePacket packet) {
+    canopyConfiguration.record(packet, serverConn.getPlayer().getProtocolVersion());
     if (canopySeamless()) {
       return true;
     }
@@ -194,7 +193,16 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
 
   @Override
   public boolean handle(final ResourcePackRequestPacket packet) {
+    canopyConfiguration.record(packet, serverConn.getPlayer().getProtocolVersion());
     final MinecraftConnection playerConnection = serverConn.getPlayer().getConnection();
+    if (serverConn.isCanopyShadow()) {
+      // Backends are identical, so the client already has any pack; a shadow never prompts the player.
+      serverConn.ensureConnected().write(new ResourcePackResponsePacket(
+          packet.getId(), packet.getHash(), PlayerResourcePackStatusEvent.Status.ACCEPTED));
+      serverConn.ensureConnected().write(new ResourcePackResponsePacket(
+          packet.getId(), packet.getHash(), PlayerResourcePackStatusEvent.Status.SUCCESSFUL));
+      return true;
+    }
 
     final ResourcePackInfo resourcePackInfo = packet.toServerPromptedPack();
     final ServerResourcePackSendEvent event =
@@ -249,6 +257,7 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
 
   @Override
   public boolean handle(RemoveResourcePackPacket packet) {
+    canopyConfiguration.record(packet, serverConn.getPlayer().getProtocolVersion());
     final MinecraftConnection playerConnection = this.serverConn.getPlayer().getConnection();
 
     final ServerResourcePackRemoveEvent event = new ServerResourcePackRemoveEvent(
@@ -278,6 +287,26 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
   public boolean handle(FinishedUpdatePacket packet) {
     final MinecraftConnection smc = serverConn.ensureConnected();
     final ConnectedPlayer player = serverConn.getPlayer();
+
+    String measured = canopyConfiguration.finish();
+    com.velocitypowered.proxy.connection.client.CanopyLifecycleHooks.audit(player.getUniqueId(), "protocol.configuration_observed",
+        "target", serverConn.getServerInfo().getName(), "fingerprint", measured, "previous", player.getCanopyConfiguration(),
+        "reuse", canopySeamless(), "matching", com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.sameConfiguration(player.getCanopyConfiguration(), measured));
+    if (canopySeamless() && !com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.sameConfiguration(
+        player.getCanopyConfiguration(), measured)) {
+      if (player.getConnection().getActiveSessionHandler() instanceof ClientPlaySessionHandler play) {
+        play.getCanopyHandover().cancel();
+      }
+      logger.warn("Canopy refused configuration reuse for {}: observed registry/tag/pack configuration differs",
+          serverConn.getServerInfo().getName());
+      resultFuture.complete(ConnectionRequestResults.forDisconnect(
+          DisconnectPacket.create(net.kyori.adventure.text.Component.text(
+              "Backend configuration differs. Use a standard transfer or refresh."),
+              player.getProtocolVersion(), StateRegistry.CONFIG), serverConn.getServer()));
+      serverConn.disconnect();
+      return true;
+    }
+    if (!canopySeamless()) player.setCanopyConfiguration(measured);
 
     if (canopySeamless()) {
       // The client stayed in PLAY, so there is no client config handler to finish. Finish the
@@ -334,7 +363,6 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
           PluginMessageUtil.rewriteMinecraftBrand(packet, server.getVersion(),
               serverConn.getPlayer().getProtocolVersion()));
     } else {
-      byte[] bytes = ByteBufUtil.getBytes(packet.content());
       ChannelIdentifier id = this.server.getChannelRegistrar().getFromId(packet.getChannel());
 
       if (id == null) {
@@ -344,6 +372,7 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
 
       // Handling this stuff async means that we should probably pause
       // the connection while we toss this off into another pool
+      byte[] bytes = ByteBufUtil.getBytes(packet.content());
       this.serverConn.getConnection().setAutoReading(false);
       this.server.getEventManager()
           .fire(new PluginMessageEvent(serverConn, serverConn.getPlayer(), id, bytes))
@@ -363,6 +392,7 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
 
   @Override
   public boolean handle(RegistrySyncPacket packet) {
+    canopyConfiguration.record(packet, serverConn.getPlayer().getProtocolVersion());
     if (canopySeamless()) {
       return true;
     }
@@ -445,6 +475,8 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
 
   @Override
   public void handleGeneric(MinecraftPacket packet) {
+    canopyConfiguration.record(packet, serverConn.getPlayer().getProtocolVersion());
+    if (canopySeamless()) return;
     serverConn.getPlayer().getConnection().write(packet);
   }
 
