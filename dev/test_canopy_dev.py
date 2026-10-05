@@ -1,6 +1,10 @@
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from argparse import Namespace
 
 from canopy_dev import (
     build_status_handshake,
@@ -10,6 +14,8 @@ from canopy_dev import (
     java_major_from_text,
     junit_summary,
     probe_java_status,
+    run_audit_summary,
+    summarize_audit,
 )
 
 
@@ -52,7 +58,6 @@ class CanopyDevParsingTest(unittest.TestCase):
         self.assertEqual(774, protocol)
 
     def test_status_probe_parses_loopback_response(self):
-        import json
         import socket
         import threading
 
@@ -80,6 +85,32 @@ class CanopyDevParsingTest(unittest.TestCase):
         self.assertEqual(result, status)
         self.assertGreaterEqual(elapsed, 0.0)
         self.assertFalse(server.is_alive())
+
+    def test_audit_summary_counts_event_names_without_printing_record_fields(self):
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / "events.jsonl"
+            path.write_text(
+                json.dumps({"event": "session.transfer", "player": "private-player-id", "x": 12345})
+                + "\n"
+                + json.dumps({"event": "session.transfer", "player": "another-private-id"})
+                + "\n"
+                + "not-json\n"
+                + json.dumps({"event": "BAD EVENT", "player": "private-player-id"})
+                + "\n",
+                encoding="utf-8",
+            )
+            counts, malformed = summarize_audit(path)
+            self.assertEqual({"session.transfer": 2}, dict(counts))
+            self.assertEqual(2, malformed)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                result = run_audit_summary(Namespace(file=path))
+            self.assertEqual(0, result)
+            self.assertIn("2 valid, 2 malformed", output.getvalue())
+            self.assertIn("session.transfer: 2", output.getvalue())
+            self.assertNotIn("private-player-id", output.getvalue())
+            self.assertNotIn("12345", output.getvalue())
 
 
 if __name__ == "__main__":

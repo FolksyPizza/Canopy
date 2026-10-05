@@ -189,6 +189,10 @@ start a server or proxy. It reports test, failure and skip totals for each suite
 handshake, optionally sending a separate virtual host with `--handshake-host`. It does not join,
 authenticate, probe Geyser's Bedrock listener, or establish seamless compatibility.
 
+`./dev/canopy-dev audit-summary <path-to-events.jsonl>` prints event counts and malformed-record
+counts from a local Canopy audit journal. It omits record fields, including player and session IDs,
+coordinates, and request data; keep the source journal private.
+
 These commands make the current builds repeatable; they do not certify live transfers or update
 cutovers. Keep the Session Gateway protocol probes and runtime fixtures isolated from production.
 The Canopy APIs and wire formats remain experimental, so a public SDK should wait until those

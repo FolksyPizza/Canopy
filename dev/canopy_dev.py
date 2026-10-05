@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import hashlib
 import json
 import os
@@ -153,6 +154,49 @@ def run_java_probe(args: argparse.Namespace) -> int:
     if type(online) is int and type(maximum) is int:
         print(f"Players online: {online}/{maximum}.")
     print("This checks only the unauthenticated Java status handshake, not login, Bedrock, or seamless transfers.")
+    return 0
+
+
+def summarize_audit(path: Path) -> tuple[Counter[str], int]:
+    counts: Counter[str] = Counter()
+    malformed = 0
+    with path.open("r", encoding="utf-8") as stream:
+        for line in stream:
+            if not line.strip():
+                continue
+            if len(line) > 1_048_576:
+                malformed += 1
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                malformed += 1
+                continue
+            if not isinstance(record, dict):
+                malformed += 1
+                continue
+            event = record.get("event")
+            if not isinstance(event, str) or re.fullmatch(r"[a-z][a-z0-9_.]{0,95}", event) is None:
+                malformed += 1
+                continue
+            counts[event] += 1
+    return counts, malformed
+
+
+def run_audit_summary(args: argparse.Namespace) -> int:
+    try:
+        counts, malformed = summarize_audit(args.file)
+    except (OSError, UnicodeError) as exc:
+        print(f"Could not read audit file ({type(exc).__name__}).", file=sys.stderr)
+        return 1
+    valid = sum(counts.values())
+    print(f"Audit records: {valid} valid, {malformed} malformed.")
+    print(f"Event types: {len(counts)}.")
+    for event, count in sorted(counts.items(), key=lambda row: (-row[1], row[0]))[:40]:
+        print(f"{event}: {count}")
+    if len(counts) > 40:
+        print(f"Other event types: {len(counts) - 40}.")
+    print("Only event names and counts are shown; record fields and player data are omitted.")
     return 0
 
 
@@ -428,12 +472,16 @@ def main() -> int:
     probe.add_argument("--protocol", type=int, choices=SUPPORTED_PROTOCOLS, default=774)
     probe.add_argument("--handshake-host", help="virtual host sent in the Minecraft handshake")
     probe.add_argument("--timeout", type=float, default=4.0)
+    audit = subparsers.add_parser("audit-summary", help="summarize a local Canopy JSONL audit without exposing record fields")
+    audit.add_argument("file", type=Path, help="path to an audit/events.jsonl file")
     args = parser.parse_args()
 
     if args.command == "check":
         return check_environment(args)
     if args.command == "probe-java":
         return run_java_probe(args)
+    if args.command == "audit-summary":
+        return run_audit_summary(args)
     return run_tests(args)
 
 
