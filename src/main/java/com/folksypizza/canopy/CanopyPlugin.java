@@ -331,10 +331,10 @@ public class CanopyPlugin extends JavaPlugin {
             redisLeaseService = new RedisLeaseService(redisClient);
             redisPartitionSyncer = new RedisPartitionSyncer(redisClient);
             redisPeerService = new RedisPeerService(redisClient, shardId);
-            log.info("Redis coordination enabled at {}", redisUrl);
+            log.info("Redis coordination enabled");
         } catch (Exception e) {
-            log.warn("Failed to initialize Redis ({}) — falling back to in-memory coordination",
-                e.getMessage());
+            log.warn("Failed to initialize Redis ({}); falling back to in-memory coordination",
+                redisFailureKind(e));
             if (redisClient != null) {
                 try { redisClient.shutdown(); } catch (Exception ignored) { }
             }
@@ -343,6 +343,10 @@ public class CanopyPlugin extends JavaPlugin {
             redisPartitionSyncer = null;
             redisPeerService = null;
         }
+    }
+
+    static String redisFailureKind(Exception failure) {
+        return failure.getClass().getSimpleName();
     }
 
     private void initNetworkEndpoints() {
