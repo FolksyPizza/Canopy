@@ -171,13 +171,24 @@ Backend and CanopySwitch builds require JDK 21 and Maven. The Session Gateway re
 Java 25 and its own Gradle build.
 
 ```sh
-mvn install                               # Canopy plugin and shared session classifier -> target/canopy-*.jar
-mvn -f velocity-plugin/pom.xml package    # CanopySwitch  -> velocity-plugin/target/*.jar
+./dev/canopy-dev check
+./dev/canopy-dev test
 ```
 
-To build the gateway, apply `session-gateway/canopy-session-gateway.patch` onto the base
-Velocity revision named in `session-gateway/README.md`, then run its Gradle `shadowJar`
-task.
+The test command runs the developer-tool tests, builds and tests the Canopy plugin, builds
+CanopySwitch, then checks out the pinned Velocity revision into a disposable workspace, applies
+the Canopy gateway patch, runs the full gateway test suite, and builds its shaded jar. It prints
+SHA-256 hashes for the produced jars and removes the temporary checkout afterward. It does not
+start a server or proxy. It reports test, failure and skip totals for each suite. Set
+`CANOPY_JDK21_HOME` and `CANOPY_JDK25_HOME`, or pass the matching `--java21-home` and
+`--java25-home` options to either command when those JDKs are not selected by `JAVA_HOME` or
+`PATH`. Use `--keep-workspace` to retain a failed or successful gateway checkout for debugging;
+`--velocity-source` can reuse a local Velocity clone without modifying it.
+
+These commands make the current builds repeatable; they do not certify live transfers or update
+cutovers. Keep the Session Gateway protocol probes and runtime fixtures isolated from production.
+The Canopy APIs and wire formats remain experimental, so a public SDK should wait until those
+contracts have a stability and compatibility policy.
 
 ## Running
 
