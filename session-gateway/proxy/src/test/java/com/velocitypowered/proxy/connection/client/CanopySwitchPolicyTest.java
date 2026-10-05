@@ -225,6 +225,35 @@ class CanopySwitchPolicyTest {
     }
   }
 
+  @Test void bedrockMovementBufferRequiresPositiveIdentityAndBothTrialFlags() {
+    String oldMode = System.getProperty("canopy.mode");
+    String oldAllowed = System.getProperty("canopy.allowSeamless");
+    String oldBedrock = System.getProperty("canopy.experimentalBedrockSeamless");
+    var bedrock = java.util.UUID.randomUUID();
+    var javaPlayer = java.util.UUID.randomUUID();
+    try {
+      System.setProperty("canopy.mode", "SEAMLESS");
+      System.clearProperty("canopy.allowSeamless");
+      System.clearProperty("canopy.experimentalBedrockSeamless");
+      markPlatform(bedrock, Platform.BEDROCK);
+      markPlatform(javaPlayer, Platform.JAVA);
+      assertFalse(mayBufferBedrockMovement(bedrock));
+      assertFalse(mayBufferBedrockMovement(javaPlayer));
+
+      System.setProperty("canopy.allowSeamless", "true");
+      assertFalse(mayBufferBedrockMovement(bedrock));
+      System.setProperty("canopy.experimentalBedrockSeamless", "true");
+      assertTrue(mayBufferBedrockMovement(bedrock));
+      assertFalse(mayUseExactHandover(bedrock));
+      assertTrue(mayUseExactHandover(javaPlayer));
+    } finally {
+      forget(bedrock); forget(javaPlayer);
+      restoreProperty("canopy.mode", oldMode);
+      restoreProperty("canopy.allowSeamless", oldAllowed);
+      restoreProperty("canopy.experimentalBedrockSeamless", oldBedrock);
+    }
+  }
+
   @Test void globalModeApiChangesDefaultsWithoutReplacingPlayerOverrides() {
     String oldMode = System.getProperty("canopy.mode");
     String oldNoRespawn = System.getProperty("canopy.noRespawn");

@@ -1,16 +1,26 @@
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/MinecraftConnection.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/MinecraftConnection.java
-index 92679a2c..111edd55 100644
+index 92679a2c11927ff989c5b963bb9f2b4f90a05846..111edd559a981a2585b7f9a0216b5dc96231b132 100644
 --- a/proxy/src/main/java/com/velocitypowered/proxy/connection/MinecraftConnection.java
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/MinecraftConnection.java
-@@ -35,2 +35,3 @@ import com.velocitypowered.natives.util.Natives;
+@@ -33,6 +33,7 @@ import com.velocitypowered.natives.encryption.VelocityCipher;
+ import com.velocitypowered.natives.encryption.VelocityCipherFactory;
+ import com.velocitypowered.natives.util.Natives;
  import com.velocitypowered.proxy.VelocityServer;
 +import com.velocitypowered.proxy.connection.client.CanopyGameplayFreeze;
  import com.velocitypowered.proxy.connection.client.ConnectedPlayer;
-@@ -144,2 +145,3 @@ public class MinecraftConnection extends ChannelInboundHandlerAdapter {
+ import com.velocitypowered.proxy.connection.client.HandshakeSessionHandler;
+ import com.velocitypowered.proxy.connection.client.InitialLoginSessionHandler;
+@@ -142,6 +143,7 @@ public class MinecraftConnection extends ChannelInboundHandlerAdapter {
+ 
+   @Override
    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
 +    CanopyGameplayFreeze.clientConnectionClosed(this, association);
      if (activeSessionHandler != null) {
-@@ -170,3 +172,11 @@ public class MinecraftConnection extends ChannelInboundHandlerAdapter {
+       activeSessionHandler.disconnected();
+     }
+@@ -168,7 +170,15 @@ public class MinecraftConnection extends ChannelInboundHandlerAdapter {
+       if (this.isClosed()) {
+         return;
        }
 -
 +      // Maintenance input policy must run before Velocity dispatches either typed packets or its
@@ -23,18 +33,26 @@ index 92679a2c..111edd55 100644
 +        return;
 +      }
        if (msg instanceof MinecraftPacket pkt) {
+         if (!pkt.handle(activeSessionHandler)) {
+           activeSessionHandler.handleGeneric(pkt);
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/BackendPlaySessionHandler.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/BackendPlaySessionHandler.java
-index 37a61d35..5d9a20ec 100644
+index 37a61d357db2bf601e5efe41c2ec1aa652f03ce2..1a8e2573f40edc41144a1046b35234cad7174fb7 100644
 --- a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/BackendPlaySessionHandler.java
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/BackendPlaySessionHandler.java
-@@ -189,3 +189,5 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
+@@ -187,7 +187,9 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
+ 
+   @Override
    public boolean handle(BossBarPacket packet) {
 -    if (serverConn.getPlayer().getProtocolVersion().lessThan(ProtocolVersion.MINECRAFT_1_20_2)) {
 +    // Before 1.20.2 JoinGame did not clear boss bars; with the no-respawn switch nothing does, so track them too.
 +    if (serverConn.getPlayer().getProtocolVersion().lessThan(ProtocolVersion.MINECRAFT_1_20_2)
 +        || playerSessionHandler.getCanopyRewriter().active(serverConn.getPlayer().getProtocolVersion())) {
        if (packet.getAction() == BossBarPacket.ADD) {
-@@ -303,2 +305,59 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
+         playerSessionHandler.getServerBossBars().add(packet.getUuid());
+       } else if (packet.getAction() == BossBarPacket.REMOVE) {
+@@ -301,6 +303,79 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
+     if (bungeecordMessageResponder.process(packet)) {
+       return true;
      }
 +    if ("canopy:cancelled".equals(packet.getChannel())) {
 +      if (serverConn.getPlayer().getConnectedServer() == serverConn && !packet.content().isReadable()) {
@@ -78,27 +96,51 @@ index 37a61d35..5d9a20ec 100644
 +      playerSessionHandler.getCanopyShadow().acknowledgeAndPromote(serverConn, transferId);
 +      return true;
 +    }
-+    if (com.velocitypowered.proxy.connection.client.CanopyHandover.SWITCH_CHANNEL.equals(packet.getChannel())
-+        && com.velocitypowered.proxy.connection.client.CanopyHandover.requestsExact(packet.content())) {
-+      playerSessionHandler.getCanopyHandover().begin(serverConn);
-+      // With a shadow on the target, the crossing promotes it rather than opening a new connection.
++    if (com.velocitypowered.proxy.connection.client.CanopyHandover.SWITCH_CHANNEL.equals(packet.getChannel())) {
 +      String target = com.velocitypowered.proxy.connection.client.CanopyHandover.switchTarget(packet.content());
-+      java.util.UUID transferId = com.velocitypowered.proxy.connection.client.CanopyHandover
-+          .switchTransferId(packet.content());
-+      if (target != null && transferId != null
-+          && playerSessionHandler.getCanopyShadow().armPromotion(target, serverConn, transferId)) {
-+        return true;
++      if (com.velocitypowered.proxy.connection.client.CanopyHandover.requestsExact(packet.content())) {
++        com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.Platform platform =
++            com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.platform(
++                serverConn.getPlayer().getUniqueId());
++        boolean mayPromoteShadow = false;
++        if (platform == com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.Platform.BEDROCK) {
++          if (target != null && !target.equalsIgnoreCase(serverConn.getServerInfo().getName())
++              && server.getServer(target).isPresent()) {
++            mayPromoteShadow = playerSessionHandler.getCanopyHandover()
++                .beginBedrockMovementBuffer(serverConn);
++          }
++        } else if (platform == com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.Platform.JAVA) {
++          playerSessionHandler.getCanopyHandover().begin(serverConn);
++          mayPromoteShadow = true;
++        }
++        // With a shadow on the target, the crossing promotes it rather than opening a new connection.
++        if (mayPromoteShadow) {
++          java.util.UUID transferId = com.velocitypowered.proxy.connection.client.CanopyHandover
++              .switchTransferId(packet.content());
++          if (target != null && transferId != null
++              && playerSessionHandler.getCanopyShadow().armPromotion(target, serverConn, transferId)) {
++            return true;
++          }
++        }
 +      }
 +    } else if (com.velocitypowered.proxy.connection.client.CanopyHandover.READY_CHANNEL.equals(packet.getChannel())) {
 +      playerSessionHandler.getCanopyHandover().ready();
 +      return true;
 +    }
  
-@@ -464,2 +523,3 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
+     // Register and unregister packets are simply forwarded to the client as-is.
+     if (PluginMessageUtil.isRegister(packet) || PluginMessageUtil.isUnregister(packet)) {
+@@ -462,6 +537,7 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
+ 
+   @Override
    public void handleGeneric(MinecraftPacket packet) {
 +    com.velocitypowered.proxy.connection.client.CanopyLifecycleHooks.trace(serverConn.getPlayer().getUniqueId(), "clientbound", packet);
      if (packet instanceof PluginMessagePacket pluginMessage) {
-@@ -477,4 +537,42 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
+       pluginMessage.retain();
+     }
+@@ -475,14 +551,57 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
+ 
+   @Override
    public void handleUnknown(ByteBuf buf) {
 -    boolean huge = buf.readableBytes() > LARGE_PACKET_THRESHOLD;
 -    playerConnection.delayedWrite(buf.retain());
@@ -143,7 +185,10 @@ index 37a61d35..5d9a20ec 100644
 +    // `out` is a fresh buffer we own, so write it directly and let the pipeline release the original.
 +    playerConnection.delayedWrite(rewritten ? out : out.retain());
      if (huge || ++packetsFlushed >= MAXIMUM_PACKETS_TO_FLUSH) {
-@@ -485,2 +583,7 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
+       playerConnection.flush();
+       packetsFlushed = 0;
+     }
+   }
  
 +  /** Observe a backend correction before any serving-lane or handover transform can consume it. */
 +  public void observeCanopyPosition(ByteBuf packet) {
@@ -151,19 +196,29 @@ index 37a61d35..5d9a20ec 100644
 +  }
 +
    @Override
-@@ -493,2 +596,4 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
+   public void readCompleted() {
+     playerConnection.flush();
+@@ -491,6 +610,8 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
+ 
+   @Override
    public void exception(Throwable throwable) {
 +    com.velocitypowered.proxy.connection.client.CanopyLifecycleHooks.audit(serverConn.getPlayer().getUniqueId(), "backend.exception",
 +        "owner", serverConn.getServerInfo().getName(), "error", throwable.getClass().getName());
      exceptionTriggered = true;
-@@ -504,2 +609,4 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
+     serverConn.getPlayer().handleConnectionException(serverConn.getServer(), throwable,
+         !(throwable instanceof ReadTimeoutException));
+@@ -502,6 +623,8 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
+ 
+   @Override
    public void disconnected() {
 +    com.velocitypowered.proxy.connection.client.CanopyLifecycleHooks.audit(serverConn.getPlayer().getUniqueId(), "backend.disconnected",
 +        "owner", serverConn.getServerInfo().getName(), "reason", serverConn.isGracefulDisconnect() ? "graceful" : "unexpected");
      serverConn.getServer().removePlayer(serverConn.getPlayer());
+     if (!serverConn.isGracefulDisconnect() && !exceptionTriggered) {
+       if (server.getConfiguration().isFailoverOnUnexpectedServerDisconnect()) {
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/CanopyEntityRewriter.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/CanopyEntityRewriter.java
 new file mode 100644
-index 00000000..26aa4698
+index 0000000000000000000000000000000000000000..26aa469887d57c677bb85e8382085855990cc4e5
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/CanopyEntityRewriter.java
 @@ -0,0 +1,568 @@
@@ -737,7 +792,7 @@ index 00000000..26aa4698
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/CanopyServingSessionHandler.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/CanopyServingSessionHandler.java
 new file mode 100644
-index 00000000..87fe68fd
+index 0000000000000000000000000000000000000000..87fe68fdb98b7509bf4f56baaf87d632b0228688
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/CanopyServingSessionHandler.java
 @@ -0,0 +1,130 @@
@@ -873,7 +928,7 @@ index 00000000..87fe68fd
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/CanopyShadowSessionHandler.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/CanopyShadowSessionHandler.java
 new file mode 100644
-index 00000000..2c569fa3
+index 0000000000000000000000000000000000000000..2c569fa38f343e69c400ca21282f9a0719522129
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/CanopyShadowSessionHandler.java
 @@ -0,0 +1,121 @@
@@ -999,23 +1054,37 @@ index 00000000..2c569fa3
 +  }
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/ConfigSessionHandler.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/ConfigSessionHandler.java
-index 904e848f..d9a864a9 100644
+index 904e848f3a8eeb23df84975281b19055563ca73e..d9a864a97746d3f1148cf61d85acec594444cc3f 100644
 --- a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/ConfigSessionHandler.java
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/ConfigSessionHandler.java
-@@ -33,2 +33,3 @@ import com.velocitypowered.proxy.connection.MinecraftSessionHandler;
+@@ -31,6 +31,7 @@ import com.velocitypowered.proxy.VelocityServer;
+ import com.velocitypowered.proxy.connection.MinecraftConnection;
+ import com.velocitypowered.proxy.connection.MinecraftSessionHandler;
  import com.velocitypowered.proxy.connection.client.ClientConfigSessionHandler;
 +import com.velocitypowered.proxy.connection.client.ClientPlaySessionHandler;
  import com.velocitypowered.proxy.connection.client.ConnectedPlayer;
-@@ -56,2 +57,3 @@ import com.velocitypowered.proxy.protocol.packet.config.CodeOfConductPacket;
+ import com.velocitypowered.proxy.connection.player.resourcepack.VelocityResourcePackInfo;
+ import com.velocitypowered.proxy.connection.player.resourcepack.handler.ResourcePackHandler;
+@@ -54,6 +55,7 @@ import com.velocitypowered.proxy.protocol.packet.config.ClientboundCustomReportD
+ import com.velocitypowered.proxy.protocol.packet.config.ClientboundServerLinksPacket;
+ import com.velocitypowered.proxy.protocol.packet.config.CodeOfConductPacket;
  import com.velocitypowered.proxy.protocol.packet.config.FinishedUpdatePacket;
 +import com.velocitypowered.proxy.protocol.packet.config.KnownPacksPacket;
  import com.velocitypowered.proxy.protocol.packet.config.RegistrySyncPacket;
-@@ -83,2 +85,4 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+ import com.velocitypowered.proxy.protocol.packet.config.StartUpdatePacket;
+ import com.velocitypowered.proxy.protocol.packet.config.TagsUpdatePacket;
+@@ -81,6 +83,8 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+   private final CompletableFuture<Impl> resultFuture;
+ 
    private ResourcePackInfo resourcePackToApply;
 +  private final com.velocitypowered.proxy.connection.client.CanopyConfiguration canopyConfiguration =
 +      new com.velocitypowered.proxy.connection.client.CanopyConfiguration();
  
-@@ -120,2 +124,10 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+   private State state;
+ 
+@@ -118,32 +122,70 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+     return false;
+   }
  
 +  /** A FAST or SEAMLESS destination uses the configuration already held by the client. */
 +  private boolean canopySeamless() {
@@ -1026,7 +1095,10 @@ index 904e848f..d9a864a9 100644
 +  }
 +
    @Override
-@@ -126,4 +138,21 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+   public boolean handle(StartUpdatePacket packet) {
+     serverConn.ensureConnected().write(packet);
+     return true;
+   }
  
 +  @Override
 +  public boolean handle(KnownPacksPacket packet) {
@@ -1048,19 +1120,28 @@ index 904e848f..d9a864a9 100644
 +      return true;
 +    }
      serverConn.getPlayer().getConnection().write(packet);
-@@ -134,2 +163,5 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+     return true;
+   }
+ 
+   @Override
    public boolean handle(ClientboundCustomReportDetailsPacket packet) {
 +    if (canopySeamless()) {
 +      return true;
 +    }
      serverConn.getPlayer().getConnection().write(packet);
-@@ -140,2 +172,5 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+     return true;
+   }
+ 
+   @Override
    public boolean handle(ClientboundServerLinksPacket packet) {
 +    if (canopySeamless()) {
 +      return true;
 +    }
      serverConn.getPlayer().getConnection().write(packet);
-@@ -146,2 +181,9 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+     return true;
+   }
+ 
+   @Override
    public boolean handle(KeepAlivePacket packet) {
 +    if (canopySeamless()) {
 +      // The client remains in PLAY while this backend is in CONFIG. Answer here: forwarding
@@ -1070,7 +1151,11 @@ index 904e848f..d9a864a9 100644
 +      return true;
 +    }
      serverConn.getPendingPings().put(packet.getRandomId(), System.nanoTime());
-@@ -153,3 +195,12 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+     serverConn.getPlayer().getConnection().write(packet);
+     return true;
+@@ -151,7 +193,16 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+ 
+   @Override
    public boolean handle(final ResourcePackRequestPacket packet) {
 +    canopyConfiguration.record(packet, serverConn.getPlayer().getProtocolVersion());
      final MinecraftConnection playerConnection = serverConn.getPlayer().getConnection();
@@ -1083,11 +1168,19 @@ index 904e848f..d9a864a9 100644
 +      return true;
 +    }
  
-@@ -208,2 +259,3 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+     final ResourcePackInfo resourcePackInfo = packet.toServerPromptedPack();
+     final ServerResourcePackSendEvent event =
+@@ -206,6 +257,7 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+ 
+   @Override
    public boolean handle(RemoveResourcePackPacket packet) {
 +    canopyConfiguration.record(packet, serverConn.getPlayer().getProtocolVersion());
      final MinecraftConnection playerConnection = this.serverConn.getPlayer().getConnection();
-@@ -237,2 +289,36 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+ 
+     final ServerResourcePackRemoveEvent event = new ServerResourcePackRemoveEvent(
+@@ -235,6 +287,40 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+   public boolean handle(FinishedUpdatePacket packet) {
+     final MinecraftConnection smc = serverConn.ensureConnected();
      final ConnectedPlayer player = serverConn.getPlayer();
 +
 +    String measured = canopyConfiguration.finish();
@@ -1124,29 +1217,45 @@ index 904e848f..d9a864a9 100644
 +    }
 +
      final ClientConfigSessionHandler configHandler = (ClientConfigSessionHandler) player.getConnection().getActiveSessionHandler();
-@@ -308,2 +394,6 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+ 
+     smc.getChannel().pipeline().get(MinecraftVarintFrameDecoder.class).setState(StateRegistry.PLAY);
+@@ -306,6 +392,10 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+ 
+   @Override
    public boolean handle(RegistrySyncPacket packet) {
 +    canopyConfiguration.record(packet, serverConn.getPlayer().getProtocolVersion());
 +    if (canopySeamless()) {
 +      return true;
 +    }
      serverConn.getPlayer().getConnection().write(packet.retain());
-@@ -372,2 +462,5 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+     return true;
+   }
+@@ -370,6 +460,9 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+ 
+   @Override
    public boolean handle(CodeOfConductPacket packet) {
 +    if (canopySeamless()) {
 +      return true;
 +    }
      this.serverConn.getPlayer().getConnection().write(packet.retain());
-@@ -384,2 +477,4 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+     return true;
+   }
+@@ -382,6 +475,8 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+ 
+   @Override
    public void handleGeneric(MinecraftPacket packet) {
 +    canopyConfiguration.record(packet, serverConn.getPlayer().getProtocolVersion());
 +    if (canopySeamless()) return;
      serverConn.getPlayer().getConnection().write(packet);
+   }
+ 
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/LoginSessionHandler.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/LoginSessionHandler.java
-index 14884af4..17a34c92 100644
+index 14884af4670fe30b00ee580ea3d65fc7f6056068..17a34c92611fe9c892ae58e30b8c5bd3d1ab39ed 100644
 --- a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/LoginSessionHandler.java
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/LoginSessionHandler.java
-@@ -98,3 +98,7 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
+@@ -96,7 +96,11 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
+           configuration.getForwardingSecret(),
+           serverConn.getPlayerRemoteAddressAsString(),
            player.getProtocolVersion(),
 -          player.getGameProfile(),
 +          // A shadow session tells the destination at login that this player is a ghost (hidden until promoted).
@@ -1155,7 +1264,11 @@ index 14884af4..17a34c92 100644
 +                  new com.velocitypowered.api.util.GameProfile.Property("canopy:ghost", "1", ""))
 +              : player.getGameProfile(),
            player.getIdentifiedKey(),
-@@ -151,2 +155,32 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
+           requestedForwardingVersion);
+ 
+@@ -149,6 +153,36 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
+       return true;
+     }
  
 +    ConnectedPlayer switchingPlayer = serverConn.getPlayer();
 +    var previous = switchingPlayer.getConnectedServer();
@@ -1188,7 +1301,11 @@ index 14884af4..17a34c92 100644
 +    }
 +
      // The player has been logged on to the backend server, but we're not done yet. There could be
-@@ -166,4 +200,10 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
+     // other problems that could arise before we get a JoinGame packet from the server.
+ 
+@@ -164,8 +198,14 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
+         smc.write(player.getClientSettingsPacket());
+       }
        if (player.getConnection().getActiveSessionHandler() instanceof ClientPlaySessionHandler clientPlaySessionHandler) {
 -        smc.setAutoReading(false);
 -        clientPlaySessionHandler.doSwitch().thenRunAsync(() -> smc.setAutoReading(true), smc.eventLoop());
@@ -1201,11 +1318,15 @@ index 14884af4..17a34c92 100644
 +          clientPlaySessionHandler.doSwitch().thenRunAsync(() -> smc.setAutoReading(true), smc.eventLoop());
 +        }
        } else {
+         // Initial login - the player is already in configuration state.
+         server.getEventManager().fireAndForget(new PlayerEnteredConfigurationEvent(player, serverConn));
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/TransitionSessionHandler.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/TransitionSessionHandler.java
-index da8513c0..8eaeb70c 100644
+index da8513c00e848b86f3c5c75df76e1350befab1cc..8eaeb70cb86f7abc949b164418556f2da3e1e9dc 100644
 --- a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/TransitionSessionHandler.java
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/TransitionSessionHandler.java
-@@ -92,2 +92,29 @@ public class TransitionSessionHandler implements MinecraftSessionHandler {
+@@ -90,6 +90,33 @@ public class TransitionSessionHandler implements MinecraftSessionHandler {
+   @Override
+   public boolean handle(JoinGamePacket packet) {
      final MinecraftConnection smc = serverConn.ensureConnected();
 +    if (serverConn.isCanopyShadow()) {
 +      // A shadow session joins but does not replace the current backend: park it until it is promoted.
@@ -1235,16 +1356,24 @@ index da8513c0..8eaeb70c 100644
 +      return true;
 +    }
      final RegisteredServer previousServer = serverConn.getPreviousServer().orElse(null);
-@@ -138,3 +165,3 @@ public class TransitionSessionHandler implements MinecraftSessionHandler {
+     final ConnectedPlayer player = serverConn.getPlayer();
+     final VelocityServerConnection existingConnection = player.getConnectedServer();
+@@ -136,7 +163,7 @@ public class TransitionSessionHandler implements MinecraftSessionHandler {
+           // Set the new play session handler for the server. We will have nothing more to do
+           // with this connection once this task finishes up.
            smc.setActiveSessionHandler(StateRegistry.PLAY,
 -              new BackendPlaySessionHandler(server, serverConn));
 +              CanopyServingSessionHandler.wrap(new BackendPlaySessionHandler(server, serverConn), smc, playHandler));
  
+           // Now set the connected server.
+           serverConn.getPlayer().setConnectedServer(serverConn);
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/VelocityServerConnection.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/VelocityServerConnection.java
-index 7cdaffa1..4210e3ad 100644
+index 7cdaffa12f6b86903484243ecbafb8c913dfc0b3..4210e3adbfe7039be6ec3cea279c91a638eff1d5 100644
 --- a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/VelocityServerConnection.java
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/VelocityServerConnection.java
-@@ -72,2 +72,15 @@ public class VelocityServerConnection implements MinecraftConnectionAssociation,
+@@ -70,6 +70,19 @@ public class VelocityServerConnection implements MinecraftConnectionAssociation,
+   private boolean hasCompletedJoin = false;
+   private boolean clientLoaded = false; // 1.21.4+
    private boolean gracefulDisconnect = false;
 +  // Canopy shadow session: a second, hidden backend session for the player, never shown to the client until promoted.
 +  private boolean canopyShadow;
@@ -1260,7 +1389,11 @@ index 7cdaffa1..4210e3ad 100644
 +  }
 +
    private BackendConnectionPhase connectionPhase = BackendConnectionPhases.UNKNOWN;
-@@ -382,2 +395,10 @@ public class VelocityServerConnection implements MinecraftConnectionAssociation,
+   private final Map<Long, Long> pendingPings = new HashMap<>();
+   private @MonotonicNonNull Integer entityId;
+@@ -380,6 +393,14 @@ public class VelocityServerConnection implements MinecraftConnectionAssociation,
+    *
+    * @return Whether the join has been completed.
     */
 +  public boolean isCanopyShadow() {
 +    return canopyShadow;
@@ -1271,9 +1404,11 @@ index 7cdaffa1..4210e3ad 100644
 +  }
 +
    public boolean hasCompletedJoin() {
+     return hasCompletedJoin;
+   }
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyArrivalView.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyArrivalView.java
 new file mode 100644
-index 00000000..7aae2bcd
+index 0000000000000000000000000000000000000000..7aae2bcd57cc4604c22f8d6363e33339e95ba2b4
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyArrivalView.java
 @@ -0,0 +1,72 @@
@@ -1351,7 +1486,7 @@ index 00000000..7aae2bcd
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyChunkView.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyChunkView.java
 new file mode 100644
-index 00000000..30716be9
+index 0000000000000000000000000000000000000000..30716be9c7b6bd4dd5aaf703a818f80b9975db20
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyChunkView.java
 @@ -0,0 +1,590 @@
@@ -1947,7 +2082,7 @@ index 00000000..30716be9
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyConfiguration.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyConfiguration.java
 new file mode 100644
-index 00000000..a6d66c71
+index 0000000000000000000000000000000000000000..a6d66c7101fb58e14605eb4d6ca4030add2b2d3f
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyConfiguration.java
 @@ -0,0 +1,117 @@
@@ -2070,7 +2205,7 @@ index 00000000..a6d66c71
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyGameplayFreeze.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyGameplayFreeze.java
 new file mode 100644
-index 00000000..bac2cced
+index 0000000000000000000000000000000000000000..bac2ccedae3321c84ba8e5a3716c40f97b0b9a82
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyGameplayFreeze.java
 @@ -0,0 +1,671 @@
@@ -2747,10 +2882,10 @@ index 00000000..bac2cced
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyHandover.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyHandover.java
 new file mode 100644
-index 00000000..1817e739
+index 0000000000000000000000000000000000000000..df4039e90d50020f351c42b796d3e0f8ada44c6e
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyHandover.java
-@@ -0,0 +1,426 @@
+@@ -0,0 +1,554 @@
 +/*
 + * Copyright (C) 2018-2025 Velocity Contributors
 + *
@@ -2773,6 +2908,7 @@ index 00000000..1817e739
 +import com.velocitypowered.proxy.connection.MinecraftConnection;
 +import com.velocitypowered.proxy.connection.backend.VelocityServerConnection;
 +import com.velocitypowered.proxy.protocol.ProtocolUtils;
++import com.velocitypowered.proxy.protocol.StateRegistry;
 +import com.velocitypowered.proxy.protocol.packet.PluginMessagePacket;
 +import io.netty.buffer.ByteBuf;
 +import io.netty.buffer.Unpooled;
@@ -2828,7 +2964,8 @@ index 00000000..1817e739
 +  /** Report a slow handoff without treating a timeout as proof that player state was restored. */
 +  private static final long CUT_TIMEOUT_MILLIS = 10_000L;
 +  private static final long ARRIVAL_TIMEOUT_MILLIS = 3_000L;
-+  private static final int MAX_BUFFERED = 2_000;
++  static final int MAX_BUFFERED = 2_000;
++  static final int MAX_BUFFERED_BYTES = 256 * 1024;
 +
 +  private enum State { IDLE, CUT, ARRIVING }
 +
@@ -2836,7 +2973,10 @@ index 00000000..1817e739
 +  private final ArrayDeque<ByteBuf> buffered = new ArrayDeque<>();
 +  private State state = State.IDLE;
 +  private long stateSince;
++  private long bufferedBytes;
 +  private VelocityServerConnection source;
++  private boolean bedrockInputBuffer;
++  private boolean bedrockBufferOverflowed;
 +  private boolean timeoutReported;
 +  private boolean bufferOverflowReported;
 +  private boolean arrivalRepairAllowed;
@@ -2964,6 +3104,26 @@ index 00000000..1817e739
 +    smc.write(new PluginMessagePacket(CUT_CHANNEL, Unpooled.EMPTY_BUFFER));
 +  }
 +
++  /** Arm a bounded movement-only queue for an explicitly enabled, positively classified Bedrock seam. */
++  public synchronized boolean beginBedrockMovementBuffer(VelocityServerConnection source) {
++    if (!CanopySwitchPolicy.mayBufferBedrockMovement(player.getUniqueId()) || state != State.IDLE
++        || CanopyProtocolProfile.find(player.getProtocolVersion().getProtocol()) == null
++        || source == null || player.getConnectedServer() != source) {
++      return false;
++    }
++    MinecraftConnection smc = source.getConnection();
++    if (smc == null || smc.isClosed() || !backendPlayReady(source)) {
++      return false;
++    }
++    this.source = source;
++    this.state = State.CUT;
++    this.stateSince = System.currentTimeMillis();
++    this.bedrockInputBuffer = true;
++    audit("input.bedrock_buffer_armed");
++    smc.write(new PluginMessagePacket(CUT_CHANNEL, Unpooled.EMPTY_BUFFER));
++    return true;
++  }
++
 +  /** A durable dead session has no gameplay input to cut; CSG routes its actual respawn request. */
 +  public synchronized void beginRespawn() {
 +    if (state != State.IDLE) throw new IllegalStateException("Another handoff is active");
@@ -3001,9 +3161,31 @@ index 00000000..1817e739
 +    if (state == State.IDLE) {
 +      return;
 +    }
++    VelocityServerConnection destination = player.getConnectedServer();
++    if (bedrockInputBuffer) {
++      if (state != State.ARRIVING || !destinationPlayReady(destination)) {
++        audit("input.ready_deferred");
++        return;
++      }
++      if (bedrockBufferOverflowed) {
++        for (ByteBuf packet : arrivalView.drain()) player.getConnection().delayedWrite(packet);
++        player.getConnection().flush();
++        audit("input.overflow_fallback_ready");
++        reset();
++        return;
++      }
++    }
 +    for (ByteBuf packet : arrivalView.drain()) player.getConnection().delayedWrite(packet);
 +    player.getConnection().flush();
-+    flushTo(player.getConnectedServer());
++    if (!flushTo(destination)) {
++      if (bedrockInputBuffer) {
++        audit("input.ready_deferred");
++        return;
++      }
++      // Preserve Java exact handover's existing behavior if its target disappeared: release the held queue and
++      // finish the handover rather than keeping the Java session armed indefinitely.
++      release();
++    }
 +    audit("input.ready");
 +    reset();
 +  }
@@ -3021,9 +3203,10 @@ index 00000000..1817e739
 +      return;
 +    }
 +    audit("input.cancel");
-+    if (source != null && source.getConnection() != null && !source.getConnection().isClosed()) {
++    if (source != null && source.getConnection() != null && !source.getConnection().isClosed()
++        && (!bedrockInputBuffer || player.getConnectedServer() == source)) {
 +      source.getConnection().write(new PluginMessagePacket(CANCEL_CHANNEL, Unpooled.EMPTY_BUFFER));
-+      flushTo(source);
++      if (!flushTo(source)) release();
 +    } else {
 +      release();
 +    }
@@ -3036,7 +3219,20 @@ index 00000000..1817e739
 +   */
 +  public synchronized boolean onServerbound(ByteBuf buf) {
 +    CanopyProtocolProfile profile = CanopyProtocolProfile.find(player.getProtocolVersion().getProtocol());
-+    if (profile != null && profile.serverbound(peekId(buf)) == SB_CLIENT_COMMAND) {
++    if (profile == null) {
++      if (bedrockInputBuffer && state != State.IDLE) {
++        audit("input.unsupported_profile");
++        if (state == State.CUT && player.getConnectedServer() == source) {
++          cancel();
++          return false;
++        }
++        bedrockBufferOverflowed = true;
++        release();
++        return true;
++      }
++      return false;
++    }
++    if (profile.serverbound(peekId(buf)) == SB_CLIENT_COMMAND) {
 +      int at = buf.readerIndex();
 +      try {
 +        ProtocolUtils.readVarInt(buf);
@@ -3054,12 +3250,38 @@ index 00000000..1817e739
 +      logger.warn("Canopy handover for {} timed out in {}; holding input until readiness or cancellation",
 +          player.getUsername(), state);
 +    }
-+    int id = CanopyProtocolProfile.find(player.getProtocolVersion().getProtocol()).serverbound(peekId(buf));
++    int id = profile.serverbound(peekId(buf));
++    if (bedrockInputBuffer) {
++      if (bedrockBufferOverflowed) {
++        return bedrockMovementInput(id) || !isForwardableAcknowledgement(id);
++      }
++      if (bedrockMovementInput(id)) {
++        int bytes = buf.readableBytes();
++        if (buffered.size() < MAX_BUFFERED && bytes <= MAX_BUFFERED_BYTES - bufferedBytes) {
++          buffered.add(buf.retainedDuplicate());
++          bufferedBytes += bytes;
++          return true;
++        }
++        audit("input.buffer_overflow");
++        if (state == State.CUT && player.getConnectedServer() == source && backendPlayReady(source)) {
++          // Source is still authoritative: cancel this projected crossing and let this packet follow the queued
++          // prefix back to that source in normal order.
++          cancel();
++          return false;
++        }
++        bedrockBufferOverflowed = true;
++        release();
++        return true;
++      }
++      return !isForwardableAcknowledgement(id);
++    }
 +    switch (id) {
 +      case SB_MOVE_POS, SB_MOVE_POS_ROT, SB_MOVE_ROT, SB_MOVE_STATUS_ONLY,
 +          SB_PLAYER_COMMAND, SB_PLAYER_INPUT, SB_SET_CARRIED_ITEM -> {
++        int bytes = buf.readableBytes();
 +        if (buffered.size() < MAX_BUFFERED) {
 +          buffered.add(buf.retainedDuplicate());
++          bufferedBytes += bytes;
 +        } else if (!bufferOverflowReported) {
 +          bufferOverflowReported = true; audit("input.buffer_overflow");
 +        }
@@ -3115,11 +3337,10 @@ index 00000000..1817e739
 +    return System.currentTimeMillis() - stateSince > limit;
 +  }
 +
-+  private void flushTo(VelocityServerConnection target) {
++  private boolean flushTo(VelocityServerConnection target) {
 +    MinecraftConnection smc = target == null ? null : target.getConnection();
-+    if (smc == null || smc.isClosed()) {
-+      release();
-+      return;
++    if (smc == null || smc.isClosed() || (bedrockInputBuffer && !backendPlayReady(target))) {
++      return false;
 +    }
 +    int count = buffered.size();
 +    // Entity ids in the held input are translated now, for the backend it is replayed to.
@@ -3127,6 +3348,7 @@ index 00000000..1817e739
 +    boolean translate = rewriter.active(player.getProtocolVersion());
 +    ByteBuf packet;
 +    while ((packet = buffered.poll()) != null) {
++      bufferedBytes -= packet.readableBytes();
 +      if (translate) {
 +        ByteBuf out = rewriter.processServerbound(packet);
 +        if (out != packet) {
@@ -3143,13 +3365,16 @@ index 00000000..1817e739
 +    logger.info("Canopy handover for {}: replayed {} input packet(s) to {}; chunks so far: {}", player.getUsername(),
 +        count, target.getServerInfo().getName(),
 +        ((ClientPlaySessionHandler) player.getConnection().getActiveSessionHandler()).getCanopyChunkView().stats());
++    return true;
 +  }
 +
 +  private void release() {
 +    ByteBuf packet;
 +    while ((packet = buffered.poll()) != null) {
++      bufferedBytes -= packet.readableBytes();
 +      packet.release();
 +    }
++    bufferedBytes = 0;
 +  }
 +
 +  private void reset() {
@@ -3157,7 +3382,45 @@ index 00000000..1817e739
 +    state = State.IDLE;
 +    timeoutReported = false; bufferOverflowReported = false;
 +    arrivalRepairAllowed = false;
++    bedrockInputBuffer = false;
++    bedrockBufferOverflowed = false;
++    bufferedBytes = 0;
 +    source = null;
++  }
++
++  synchronized int bufferedInputCount() {
++    return buffered.size();
++  }
++
++  synchronized long bufferedInputBytes() {
++    return bufferedBytes;
++  }
++
++  private boolean destinationPlayReady(VelocityServerConnection candidate) {
++    return candidate != null && candidate != source && player.getConnectedServer() == candidate
++        && backendPlayReady(candidate);
++  }
++
++  private static boolean backendPlayReady(VelocityServerConnection candidate) {
++    if (candidate == null || candidate.getConnection() == null || candidate.getConnection().isClosed()) {
++      return false;
++    }
++    return candidate.getPhase().consideredComplete() && candidate.getConnection().getState() == StateRegistry.PLAY;
++  }
++
++  private static boolean bedrockMovementInput(int id) {
++    return switch (id) {
++      case SB_MOVE_POS, SB_MOVE_POS_ROT, SB_MOVE_ROT, SB_MOVE_STATUS_ONLY,
++          SB_PLAYER_COMMAND, SB_PLAYER_INPUT, SB_SET_CARRIED_ITEM -> true;
++      default -> false;
++    };
++  }
++
++  private static boolean isForwardableAcknowledgement(int id) {
++    return switch (id) {
++      case SB_CHUNK_BATCH_RECEIVED, SB_CLIENT_TICK_END, SB_PLAYER_LOADED, SB_PONG, SB_ACCEPT_TELEPORTATION -> true;
++      default -> false;
++    };
 +  }
 +
 +  private void audit(String event) {
@@ -3179,7 +3442,7 @@ index 00000000..1817e739
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyKnownPacks.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyKnownPacks.java
 new file mode 100644
-index 00000000..883d5ce4
+index 0000000000000000000000000000000000000000..883d5ce477f37417c590f99c2b32227bfee3bfe9
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyKnownPacks.java
 @@ -0,0 +1,24 @@
@@ -3209,7 +3472,7 @@ index 00000000..883d5ce4
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyLifecycleHooks.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyLifecycleHooks.java
 new file mode 100644
-index 00000000..ff622204
+index 0000000000000000000000000000000000000000..ff622204e0a250ee4518937b65267beab8e23a32
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyLifecycleHooks.java
 @@ -0,0 +1,60 @@
@@ -3275,7 +3538,7 @@ index 00000000..ff622204
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyProtocolProfile.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyProtocolProfile.java
 new file mode 100644
-index 00000000..eb1604f8
+index 0000000000000000000000000000000000000000..eb1604f87d868afd0f9e9c05d46e8865ef8b32dd
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyProtocolProfile.java
 @@ -0,0 +1,67 @@
@@ -3348,7 +3611,7 @@ index 00000000..eb1604f8
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyServing.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyServing.java
 new file mode 100644
-index 00000000..6cb16240
+index 0000000000000000000000000000000000000000..6cb162405d1594294b3610b47a53cddeaaa6d501
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyServing.java
 @@ -0,0 +1,120 @@
@@ -3474,7 +3737,7 @@ index 00000000..6cb16240
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyShadow.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyShadow.java
 new file mode 100644
-index 00000000..067eab3b
+index 0000000000000000000000000000000000000000..067eab3bf2bd635a071365c9b0dfeca7109f22ee
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyShadow.java
 @@ -0,0 +1,230 @@
@@ -3710,7 +3973,7 @@ index 00000000..067eab3b
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyShadowPromotionGate.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyShadowPromotionGate.java
 new file mode 100644
-index 00000000..d52a5312
+index 0000000000000000000000000000000000000000..d52a5312dc427f985d85e2809a66da420cce0a0e
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyShadowPromotionGate.java
 @@ -0,0 +1,86 @@
@@ -3802,10 +4065,10 @@ index 00000000..d52a5312
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopySwitchPolicy.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopySwitchPolicy.java
 new file mode 100644
-index 00000000..11dc1540
+index 0000000000000000000000000000000000000000..252c07e540e6ec46cd89895f2c42ad2c39c8a960
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopySwitchPolicy.java
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,150 @@
 +package com.velocitypowered.proxy.connection.client;
 +
 +import java.util.Locale;
@@ -3890,6 +4153,12 @@ index 00000000..11dc1540
 +    return platform(player) == Platform.JAVA && requested(player) == Mode.SEAMLESS;
 +  }
 +
++  /** Projected movement buffering is limited to positively identified Bedrock trial sessions. */
++  public static boolean mayBufferBedrockMovement(UUID player) {
++    return platform(player) == Platform.BEDROCK && requested(player) == Mode.SEAMLESS
++        && bedrockTrialEnabled();
++  }
++
 +  private static boolean bedrockTrialEnabled() {
 +    return Boolean.getBoolean("canopy.allowSeamless")
 +        && Boolean.getBoolean("canopy.experimentalBedrockSeamless");
@@ -3951,22 +4220,32 @@ index 00000000..11dc1540
 +  }
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ClientConfigSessionHandler.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ClientConfigSessionHandler.java
-index b8604103..633e147d 100644
+index b86041035bb282c880fc388d47e2a5aee6dc128d..633e147ddd3edb02d0313a67b82a10fdecaef2bb 100644
 --- a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ClientConfigSessionHandler.java
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ClientConfigSessionHandler.java
-@@ -177,2 +177,3 @@ public class ClientConfigSessionHandler implements MinecraftSessionHandler {
+@@ -175,6 +175,7 @@ public class ClientConfigSessionHandler implements MinecraftSessionHandler {
+ 
+   @Override
    public boolean handle(KnownPacksPacket packet) {
 +    player.setCanopyKnownPacks(packet);
      callConfigurationEvent().thenRun(() -> {
+       VelocityServerConnection targetServer =
+           player.getConnectionInFlightOrConnectedServer();
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ClientPlaySessionHandler.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ClientPlaySessionHandler.java
-index beecf3ac..d537cc9e 100644
+index beecf3ac32e9615acef9ae155dec40a186e00c8d..4c5f6adb24400a5fa0a2ba9d7b4f053ecb7bca6c 100644
 --- a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ClientPlaySessionHandler.java
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ClientPlaySessionHandler.java
-@@ -45,2 +45,3 @@ import com.velocitypowered.proxy.protocol.StateRegistry;
+@@ -43,6 +43,7 @@ import com.velocitypowered.proxy.connection.player.resourcepack.ResourcePackResp
+ import com.velocitypowered.proxy.protocol.MinecraftPacket;
+ import com.velocitypowered.proxy.protocol.StateRegistry;
  import com.velocitypowered.proxy.protocol.netty.MinecraftDecoder;
 +import com.velocitypowered.proxy.connection.registry.DimensionInfo;
  import com.velocitypowered.proxy.protocol.packet.BossBarPacket;
-@@ -135,2 +136,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+ import com.velocitypowered.proxy.protocol.packet.ClientSettingsPacket;
+ import com.velocitypowered.proxy.protocol.packet.JoinGamePacket;
+@@ -133,6 +134,11 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+ 
+   private int failedTabCompleteAttempts;
  
 +  // Per-connection state for the experimental no-respawn seamless switch (-Dcanopy.noRespawn).
 +  private CanopyHandover canopyHandover;
@@ -3974,30 +4253,48 @@ index beecf3ac..d537cc9e 100644
 +      new com.velocitypowered.proxy.connection.backend.CanopyEntityRewriter();
 +
    /**
-@@ -144,2 +150,3 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+    * Constructs a client play session handler.
+    *
+@@ -142,6 +148,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+   public ClientPlaySessionHandler(VelocityServer server, ConnectedPlayer player) {
+     this.player = player;
      this.server = server;
 +    canopyRewriter.enabled(false);
  
-@@ -192,2 +199,3 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+     if (this.player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_19_3)) {
+       this.chatHandler = new SessionChatHandler(this.player, this.server);
+@@ -190,6 +197,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+ 
+   @Override
    public void deactivated() {
 +    if (canopyHandover != null) canopyHandover.abandon();
      player.discardChatQueue();
-@@ -524,2 +532,3 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+     PluginMessagePacket message;
+     while ((message = loginPluginMessages.poll()) != null) {
+@@ -522,6 +530,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+ 
+   @Override
    public void handleGeneric(MinecraftPacket packet) {
 +    CanopyLifecycleHooks.trace(player.getUniqueId(), "serverbound", packet);
      VelocityServerConnection serverConnection = player.getConnectedServer();
-@@ -545,2 +554,3 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+     if (serverConnection == null) {
+       // No server connection yet, probably transitioning.
+@@ -543,6 +552,12 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+ 
+   @Override
    public void handleUnknown(ByteBuf buf) {
 +    CanopyLifecycleHooks.trace(player.getUniqueId(), "serverbound", buf);
-     VelocityServerConnection serverConnection = player.getConnectedServer();
-@@ -550,2 +560,6 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
-     }
-+    // An exact shard handover holds the player's input back between the cut and the destination being ready.
++    // Raw PLAY packets include the movement IDs Velocity does not register as MinecraftPacket instances.
++    // Apply the explicit handover allow-list before the transition can temporarily clear connectedServer.
 +    if (getCanopyHandover().onServerbound(buf)) {
 +      return;
 +    }
- 
-@@ -557,3 +571,10 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+     VelocityServerConnection serverConnection = player.getConnectedServer();
+     if (serverConnection == null) {
+       // No server connection yet, probably transitioning.
+@@ -555,12 +570,24 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+         && serverConnection.getPhase().consideredComplete()
+         && smc.getState() == StateRegistry.PLAY;
      if (stateAllowsForward) {
 -      smc.write(buf.retain());
 +      // Translate the player's own entity id (and any collision partner) in serverbound packets
@@ -4009,7 +4306,9 @@ index beecf3ac..d537cc9e 100644
 +        smc.write(buf.retain());
 +      }
      }
-@@ -563,2 +584,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+   }
+ 
+   @Override
    public void disconnected() {
 +    if (canopyHandover != null) canopyHandover.abandon();
 +    if (canopyRewriter.isInitialized()) {
@@ -4017,14 +4316,22 @@ index beecf3ac..d537cc9e 100644
 +    }
 +    if (canopyServing != null) canopyServing.close();
      player.teardown();
-@@ -598,3 +624,5 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+   }
+ 
+@@ -596,7 +623,9 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+     if (serverConn != null) {
+       MinecraftConnection smc = serverConn.getConnection();
        if (smc != null) {
 -        smc.setAutoReading(writable);
 +        smc.setAutoReading(writable && (!(smc.getActiveSessionHandler()
 +            instanceof com.velocitypowered.proxy.connection.backend.CanopyServingSessionHandler serving)
 +            || serving.canRead()));
        }
-@@ -619,13 +647,17 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+     }
+   }
+@@ -617,17 +646,21 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+       // Send keep alive to try to avoid timeouts
+       player.sendKeepAlive();
  
 -      // Config state clears everything in the client. No need to clear later.
 -      spawned = false;
@@ -4051,7 +4358,11 @@ index beecf3ac..d537cc9e 100644
 +    getCanopyHandover().abandon();
 +    canopyChunkView.clear();
      player.switchToConfigState();
-@@ -643,3 +675,10 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+ 
+     return configSwitchFuture;
+@@ -641,7 +674,14 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+    * @param destination the new server we are connecting to
+    */
    public void handleBackendJoinGame(JoinGamePacket joinGame, VelocityServerConnection destination) {
 +    CanopyLifecycleHooks.audit(player.getUniqueId(), "world.backend_join", "target", destination.getServerInfo().getName(),
 +        "mode", destination.getCanopyMode().name(), "protocol", player.getProtocolVersion().getProtocol());
@@ -4062,7 +4373,11 @@ index beecf3ac..d537cc9e 100644
 +    canopyRewriter.enabled(CanopySwitchPolicy.requested(player.getUniqueId())
 +        == CanopySwitchPolicy.Mode.SEAMLESS);
  
-@@ -652,2 +691,8 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+     if (!spawned) {
+       // The player wasn't spawned in yet, so we don't need to do anything special. Just send
+@@ -650,6 +690,12 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+       player.getConnection().delayedWrite(joinGame);
+       // Required for Legacy Forge
        player.getPhase().onFirstJoin(player);
 +      // Bind the no-respawn rewriter to the entity id the client is now locked to.
 +      if (canopyRewriter.supports(player.getProtocolVersion())) {
@@ -4071,7 +4386,11 @@ index beecf3ac..d537cc9e 100644
 +      }
 +      canopyNoteWorld(joinGame);
      } else {
-@@ -660,4 +705,26 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+       // Clear tab list to avoid duplicate entries
+       player.getTabList().clearAll();
+@@ -658,8 +704,30 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+       // entity IDs and send new dimension information.
+       if (player.getConnection().getType() == ConnectionTypes.LEGACY_FORGE) {
          this.doSafeClientServerSwitch(joinGame);
 +      } else if (destination.getCanopyMode() == CanopySwitchPolicy.Mode.SEAMLESS
 +          && canopyRewriter.active(player.getProtocolVersion()) && canopyRewriter.isInitialized()) {
@@ -4098,7 +4417,11 @@ index beecf3ac..d537cc9e 100644
 +          canopyChunkView.clear();
 +        }
        }
-@@ -734,2 +801,88 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+     }
+ 
+@@ -732,6 +800,92 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+     player.getConnection().delayedWrite(respawn);
+   }
  
 +  /**
 +   * Experimental seamless switch that sends no JoinGame or Respawn, so the client keeps its current
@@ -4187,11 +4510,15 @@ index beecf3ac..d537cc9e 100644
 +  }
 +
    private void doSafeClientServerSwitch(JoinGamePacket joinGame) {
+     // Some clients do not behave well with the "fast" respawn sequence. In this case we will use
+     // a "safe" respawn sequence that involves sending three packets to the client. They have the
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ConnectedPlayer.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ConnectedPlayer.java
-index f5898ace..ae5c7b9f 100644
+index f5898aceea5260968ef117a638cbdc3426813581..ae5c7b9f68516d8ed065615999aa61345a131634 100644
 --- a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ConnectedPlayer.java
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ConnectedPlayer.java
-@@ -1426,2 +1426,30 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player,
+@@ -1424,9 +1424,38 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player,
+     return bossBarManager;
+   }
  
 +  private String canopyConfiguration = "";
 +  private volatile byte[] canopyKnownPacks = new byte[] {0};
@@ -4222,36 +4549,50 @@ index f5898ace..ae5c7b9f 100644
 +  }
 +
    private final class ConnectionRequestBuilderImpl implements ConnectionRequestBuilder {
-@@ -1429,2 +1457,3 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player,
+ 
      private final RegisteredServer toConnect;
 +    private boolean refresh;
      private final @Nullable VelocityRegisteredServer previousServer;
-@@ -1449,3 +1478,3 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player,
+ 
+     ConnectionRequestBuilderImpl(RegisteredServer toConnect,
+@@ -1447,7 +1476,7 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player,
+           && !connectedServer.hasCompletedJoin())) {
+         return Optional.of(ConnectionRequestBuilder.Status.CONNECTION_IN_PROGRESS);
        }
 -      if (connectedServer != null
 +      if (!refresh && connectedServer != null
            && connectedServer.getServer().getServerInfo().equals(server.getServerInfo())) {
-@@ -1485,2 +1514,6 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player,
+         return Optional.of(ALREADY_CONNECTED);
+       }
+@@ -1483,6 +1512,10 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player,
+           VelocityServerConnection con =
+               new VelocityServerConnection(vrs, previousServer, ConnectedPlayer.this, server);
            connectionInFlight = con;
 +          if (refresh && connectedServer != null) {
 +            connectedServer.disconnect();
 +            connectedServer = null;
 +          }
  
+           return con.connect().whenCompleteAsync((result, exception) -> {
+             if (result != null && !result.isSuccessful() && !result.isSafe()) {
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/protocol/util/PluginMessageUtil.java b/proxy/src/main/java/com/velocitypowered/proxy/protocol/util/PluginMessageUtil.java
-index 298e74d4..b5a4ede6 100644
+index 298e74d4f202fa01d93317ae3d69e8bf3e173041..b5a4ede60439063f3e095dde4e8bb0e9abab6d4a 100644
 --- a/proxy/src/main/java/com/velocitypowered/proxy/protocol/util/PluginMessageUtil.java
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/protocol/util/PluginMessageUtil.java
-@@ -186,3 +186,5 @@ public final class PluginMessageUtil {
+@@ -184,7 +184,9 @@ public final class PluginMessageUtil {
+     checkArgument(isMcBrand(message), "message is not a brand plugin message");
+ 
      String currentBrand = readBrandMessage(message.content());
 -    String rewrittenBrand = String.format("%s (%s)", currentBrand, version.getName());
 +    // Canopy Session Gateway: present the cluster as "Canopy" in the client's F3 brand line
 +    // rather than the underlying proxy name.
 +    String rewrittenBrand = String.format("%s (Canopy)", currentBrand);
  
+     ByteBuf rewrittenBuf = Unpooled.buffer();
+     if (protocolVersion.noLessThan(ProtocolVersion.MINECRAFT_1_8)) {
 diff --git a/proxy/src/main/resources/canopy/protocol-profiles.tsv b/proxy/src/main/resources/canopy/protocol-profiles.tsv
 new file mode 100644
-index 00000000..d0134bad
+index 0000000000000000000000000000000000000000..d0134baddd1ffda9b67ddea03f6ec532d3ff2224
 --- /dev/null
 +++ b/proxy/src/main/resources/canopy/protocol-profiles.tsv
 @@ -0,0 +1,467 @@
@@ -4722,9 +5063,247 @@ index 00000000..d0134bad
 +777 SB 8 9
 +777 SB 1b 1c
 +777 SB 21 22
+diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/backend/BackendPlaySessionHandlerBedrockHandoverTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/backend/BackendPlaySessionHandlerBedrockHandoverTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..1653fc3113ff177b3e938fe6a02a6596d9ad7e9c
+--- /dev/null
++++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/backend/BackendPlaySessionHandlerBedrockHandoverTest.java
+@@ -0,0 +1,232 @@
++/*
++ * Copyright (C) 2018-2025 Velocity Contributors
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
++ */
++
++package com.velocitypowered.proxy.connection.backend;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.ArgumentMatchers.anyString;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.times;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++import com.velocitypowered.api.network.ProtocolVersion;
++import com.velocitypowered.api.proxy.server.RegisteredServer;
++import com.velocitypowered.api.proxy.server.ServerInfo;
++import com.velocitypowered.proxy.VelocityServer;
++import com.velocitypowered.proxy.config.VelocityConfiguration;
++import com.velocitypowered.proxy.connection.MinecraftConnection;
++import com.velocitypowered.proxy.connection.client.CanopyHandover;
++import com.velocitypowered.proxy.connection.client.CanopySwitchPolicy;
++import com.velocitypowered.proxy.connection.client.ClientPlaySessionHandler;
++import com.velocitypowered.proxy.connection.client.ConnectedPlayer;
++import com.velocitypowered.proxy.protocol.StateRegistry;
++import com.velocitypowered.proxy.protocol.packet.PluginMessagePacket;
++import com.velocitypowered.proxy.util.VelocityChannelRegistrar;
++import io.netty.buffer.ByteBuf;
++import io.netty.buffer.Unpooled;
++import io.netty.util.ReferenceCountUtil;
++import java.net.InetSocketAddress;
++import java.nio.charset.StandardCharsets;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Optional;
++import java.util.UUID;
++import org.junit.jupiter.api.Test;
++import org.mockito.ArgumentCaptor;
++
++class BackendPlaySessionHandlerBedrockHandoverTest {
++  @Test
++  void exactBedrockSwitchArmsOnceAndSendsOneCutMarker() throws Exception {
++    UUID id = UUID.randomUUID();
++    try (PropertyRestore ignored = trial(id, CanopySwitchPolicy.Platform.BEDROCK,
++        "canopy.allowSeamless", "true", "canopy.experimentalBedrockSeamless", "true")) {
++      Fixture fixture = fixture(id, 776);
++      when(fixture.server().getServer("east")).thenReturn(Optional.of(mock(RegisteredServer.class)));
++      PluginMessagePacket request = switchRequest("east", true);
++      try {
++        fixture.handler().handle(request);
++        fixture.handler().handle(request);
++
++        assertTrue(fixture.playHandler().getCanopyHandover().active());
++        ArgumentCaptor<Object> writes = ArgumentCaptor.forClass(Object.class);
++        verify(fixture.sourceConnection(), times(1)).write(writes.capture());
++        PluginMessagePacket marker = (PluginMessagePacket) writes.getValue();
++        try {
++          assertTrue(CanopyHandover.CUT_CHANNEL.equals(marker.getChannel()));
++        } finally {
++          ReferenceCountUtil.release(marker);
++        }
++      } finally {
++        ReferenceCountUtil.release(request);
++        fixture.playHandler().getCanopyHandover().abandon();
++      }
++    }
++  }
++
++  @Test
++  void exactBedrockSwitchWithoutBothTrialFlagsDoesNotArmOrSendCut() throws Exception {
++    UUID id = UUID.randomUUID();
++    try (PropertyRestore ignored = trial(id, CanopySwitchPolicy.Platform.BEDROCK,
++        "canopy.allowSeamless", "true", "canopy.experimentalBedrockSeamless", "false")) {
++      Fixture fixture = fixture(id, 776);
++      when(fixture.server().getServer("east")).thenReturn(Optional.of(mock(RegisteredServer.class)));
++      PluginMessagePacket request = switchRequest("east", true);
++      try {
++        fixture.handler().handle(request);
++
++        assertFalse(fixture.playHandler().getCanopyHandover().active());
++        verify(fixture.sourceConnection(), never()).write(org.mockito.ArgumentMatchers.any());
++      } finally {
++        ReferenceCountUtil.release(request);
++      }
++    }
++  }
++
++  @Test
++  void nonExactBedrockSwitchLeavesProjectedPathUnchanged() throws Exception {
++    UUID id = UUID.randomUUID();
++    try (PropertyRestore ignored = trial(id, CanopySwitchPolicy.Platform.BEDROCK,
++        "canopy.allowSeamless", "true", "canopy.experimentalBedrockSeamless", "true")) {
++      Fixture fixture = fixture(id, 776);
++      PluginMessagePacket request = switchRequest("east", false);
++      try {
++        fixture.handler().handle(request);
++
++        assertFalse(fixture.playHandler().getCanopyHandover().active());
++        verify(fixture.server(), never()).getServer("east");
++        verify(fixture.sourceConnection(), never()).write(org.mockito.ArgumentMatchers.any());
++      } finally {
++        ReferenceCountUtil.release(request);
++      }
++    }
++  }
++
++  @Test
++  void exactJavaSwitchStillUsesOnlyTheExistingExactGate() throws Exception {
++    UUID id = UUID.randomUUID();
++    try (PropertyRestore ignored = trial(id, CanopySwitchPolicy.Platform.JAVA,
++        "canopy.allowSeamless", "false", "canopy.experimentalBedrockSeamless", "false")) {
++      Fixture fixture = fixture(id, 776);
++      PluginMessagePacket request = switchRequest("east", true);
++      try {
++        fixture.handler().handle(request);
++
++        if (Boolean.getBoolean("canopy.exactHandover")) {
++          assertTrue(fixture.playHandler().getCanopyHandover().active());
++          ArgumentCaptor<Object> writes = ArgumentCaptor.forClass(Object.class);
++          verify(fixture.sourceConnection(), times(1)).write(writes.capture());
++          PluginMessagePacket marker = (PluginMessagePacket) writes.getValue();
++          try {
++            assertTrue(CanopyHandover.CUT_CHANNEL.equals(marker.getChannel()));
++          } finally {
++            ReferenceCountUtil.release(marker);
++          }
++        } else {
++          assertFalse(fixture.playHandler().getCanopyHandover().active());
++          verify(fixture.sourceConnection(), never()).write(org.mockito.ArgumentMatchers.any());
++        }
++      } finally {
++        ReferenceCountUtil.release(request);
++        fixture.playHandler().getCanopyHandover().abandon();
++      }
++    }
++  }
++
++  private static Fixture fixture(UUID id, int protocol) {
++    VelocityServer server = mock(VelocityServer.class);
++    VelocityConfiguration configuration = mock(VelocityConfiguration.class);
++    VelocityChannelRegistrar registrar = mock(VelocityChannelRegistrar.class);
++    when(server.getConfiguration()).thenReturn(configuration);
++    when(configuration.isBungeePluginChannelEnabled()).thenReturn(false);
++    when(server.getChannelRegistrar()).thenReturn(registrar);
++    when(registrar.getFromId(anyString())).thenReturn(null);
++
++    ConnectedPlayer player = mock(ConnectedPlayer.class);
++    MinecraftConnection clientConnection = mock(MinecraftConnection.class);
++    when(player.getUniqueId()).thenReturn(id);
++    when(player.getUsername()).thenReturn("FixtureClient");
++    when(player.getConnection()).thenReturn(clientConnection);
++    when(player.getProtocolVersion()).thenReturn(ProtocolVersion.getProtocolVersion(protocol));
++    when(clientConnection.getProtocolVersion()).thenReturn(ProtocolVersion.getProtocolVersion(protocol));
++    ClientPlaySessionHandler playHandler = new ClientPlaySessionHandler(server, player);
++    when(clientConnection.getActiveSessionHandler()).thenReturn(playHandler);
++
++    VelocityServerConnection source = mock(VelocityServerConnection.class);
++    MinecraftConnection sourceConnection = mock(MinecraftConnection.class);
++    when(source.getPlayer()).thenReturn(player);
++    when(source.getConnection()).thenReturn(sourceConnection);
++    when(source.getServerInfo()).thenReturn(new ServerInfo("main",
++        new InetSocketAddress("127.0.0.1", 25565)));
++    when(source.getPhase()).thenReturn(BackendConnectionPhases.VANILLA);
++    when(sourceConnection.isClosed()).thenReturn(false);
++    when(sourceConnection.getState()).thenReturn(StateRegistry.PLAY);
++    when(player.getConnectedServer()).thenReturn(source);
++
++    return new Fixture(server, source, sourceConnection, player, playHandler,
++        new BackendPlaySessionHandler(server, source));
++  }
++
++  private static PluginMessagePacket switchRequest(String target, boolean exact) {
++    byte[] name = target.getBytes(StandardCharsets.UTF_8);
++    ByteBuf content = Unpooled.buffer();
++    content.writeShort(name.length).writeBytes(name).writeByte(exact ? 1 : 0);
++    return new PluginMessagePacket(CanopyHandover.SWITCH_CHANNEL, content);
++  }
++
++  private static PropertyRestore trial(UUID player, CanopySwitchPolicy.Platform platform,
++                                       String... extraProperties) {
++    List<String> properties = new ArrayList<>(List.of("canopy.mode", "SEAMLESS",
++        "canopy.allowSeamless", "false", "canopy.experimentalBedrockSeamless", "false"));
++    properties.addAll(List.of(extraProperties));
++    PropertyRestore restore = new PropertyRestore(player, properties.toArray(String[]::new));
++    CanopySwitchPolicy.markPlatform(player, platform);
++    CanopySwitchPolicy.seamless(player, true);
++    return restore;
++  }
++
++  private record Fixture(VelocityServer server, VelocityServerConnection source,
++                         MinecraftConnection sourceConnection, ConnectedPlayer player,
++                         ClientPlaySessionHandler playHandler, BackendPlaySessionHandler handler) { }
++
++  private static final class PropertyRestore implements AutoCloseable {
++    private final UUID player;
++    private final List<String> names = new ArrayList<>();
++    private final List<String> values = new ArrayList<>();
++
++    PropertyRestore(UUID player, String... nameValues) {
++      this.player = player;
++      for (int i = 0; i < nameValues.length; i += 2) {
++        String name = nameValues[i];
++        names.add(name);
++        values.add(System.getProperty(name));
++        System.setProperty(name, nameValues[i + 1]);
++      }
++    }
++
++    @Override
++    public void close() {
++      CanopySwitchPolicy.forget(player);
++      for (int i = 0; i < names.size(); i++) {
++        if (values.get(i) == null) System.clearProperty(names.get(i));
++        else System.setProperty(names.get(i), values.get(i));
++      }
++    }
++  }
++}
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyArrivalViewTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyArrivalViewTest.java
 new file mode 100644
-index 00000000..6a391ea2
+index 0000000000000000000000000000000000000000..6a391ea2a7b3764f856b11e7eebd58785fa86372
 --- /dev/null
 +++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyArrivalViewTest.java
 @@ -0,0 +1,123 @@
@@ -4853,7 +5432,7 @@ index 00000000..6a391ea2
 +}
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyChunkViewTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyChunkViewTest.java
 new file mode 100644
-index 00000000..a7a19b04
+index 0000000000000000000000000000000000000000..a7a19b044b94a64ad8e17adc7a03ee958c450c44
 --- /dev/null
 +++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyChunkViewTest.java
 @@ -0,0 +1,113 @@
@@ -4972,7 +5551,7 @@ index 00000000..a7a19b04
 +}
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyConfigurationTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyConfigurationTest.java
 new file mode 100644
-index 00000000..8395036f
+index 0000000000000000000000000000000000000000..8395036f6b6083c6328a84232706b0f89cc2c65e
 --- /dev/null
 +++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyConfigurationTest.java
 @@ -0,0 +1,114 @@
@@ -5092,7 +5671,7 @@ index 00000000..8395036f
 +}
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyGameplayFreezeLifecycleTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyGameplayFreezeLifecycleTest.java
 new file mode 100644
-index 00000000..f9861163
+index 0000000000000000000000000000000000000000..f986116335885f042d5c2bc5601a1eec03ed8e81
 --- /dev/null
 +++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyGameplayFreezeLifecycleTest.java
 @@ -0,0 +1,396 @@
@@ -5494,7 +6073,7 @@ index 00000000..f9861163
 +}
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyGameplayFreezeTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyGameplayFreezeTest.java
 new file mode 100644
-index 00000000..e80eb146
+index 0000000000000000000000000000000000000000..e80eb146b97294619aff801d090c1c2ae1b9c7c6
 --- /dev/null
 +++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyGameplayFreezeTest.java
 @@ -0,0 +1,288 @@
@@ -5786,9 +6365,229 @@ index 00000000..e80eb146
 +    }
 +  }
 +}
+diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyHandoverTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyHandoverTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..c180bf76ff6b7795247bde0a0a7435c5ba72aaf1
+--- /dev/null
++++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyHandoverTest.java
+@@ -0,0 +1,214 @@
++/*
++ * Copyright (C) 2018-2025 Velocity Contributors
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
++ */
++
++package com.velocitypowered.proxy.connection.client;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.ArgumentMatchers.any;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.times;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++import com.velocitypowered.api.network.ProtocolVersion;
++import com.velocitypowered.api.proxy.server.ServerInfo;
++import com.velocitypowered.proxy.connection.MinecraftConnection;
++import com.velocitypowered.proxy.connection.backend.BackendConnectionPhases;
++import com.velocitypowered.proxy.connection.backend.BackendConnectionPhase;
++import com.velocitypowered.proxy.connection.backend.CanopyEntityRewriter;
++import com.velocitypowered.proxy.connection.backend.VelocityServerConnection;
++import com.velocitypowered.proxy.protocol.ProtocolUtils;
++import com.velocitypowered.proxy.protocol.StateRegistry;
++import com.velocitypowered.proxy.protocol.ProtocolUtils.Direction;
++import io.netty.buffer.ByteBuf;
++import io.netty.buffer.Unpooled;
++import java.net.InetSocketAddress;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.UUID;
++import org.junit.jupiter.api.Test;
++import org.mockito.ArgumentCaptor;
++
++class CanopyHandoverTest {
++  @Test
++  void bedrockMovementAllowListIdsAreRawAcrossEveryNativeProfile() {
++    int[] allowed = {0x1d, 0x1e, 0x1f, 0x20, 0x29, 0x2a, 0x34};
++    for (int protocol = 771; protocol <= 777; protocol++) {
++      var profile = CanopyProtocolProfile.find(protocol);
++      var version = ProtocolVersion.getProtocolVersion(protocol);
++      var registry = StateRegistry.PLAY.getProtocolRegistry(Direction.SERVERBOUND, version);
++      for (int canonical : allowed) {
++        assertNull(registry.createPacket(profile.serverboundWire(canonical)),
++            "allow-listed movement/input ID " + Integer.toHexString(canonical) + " must stay raw for " + protocol);
++      }
++      assertNull(registry.createPacket(profile.serverboundWire(0x21)),
++          "vehicle movement is raw but remains outside the safe replay allow-list for " + protocol);
++    }
++  }
++
++  @Test
++  void bedrockVehicleAndUnrelatedRawPacketsAreConsumedWithoutBuffering() throws Exception {
++    UUID id = UUID.randomUUID();
++    try (PropertyRestore ignored = enableBedrockTrial(id)) {
++      Fixture fixture = fixture(id, 776);
++      CanopyHandover handover = new CanopyHandover(fixture.player());
++      ByteBuf vehicle = movement(CanopyProtocolProfile.find(776), 0x21, 33);
++      ByteBuf unrelated = Unpooled.buffer();
++      ProtocolUtils.writeVarInt(unrelated, 0x7f);
++      try {
++        assertTrue(handover.beginBedrockMovementBuffer(fixture.source()));
++        assertTrue(handover.onServerbound(vehicle));
++        assertTrue(handover.onServerbound(unrelated));
++        assertEquals(0, handover.bufferedInputCount());
++        assertEquals(0, handover.bufferedInputBytes());
++      } finally {
++        vehicle.release();
++        unrelated.release();
++        handover.abandon();
++      }
++    }
++  }
++
++  @Test
++  void bedrockMovementWaitsForDestinationPlayAndReplaysInOrder() throws Exception {
++    UUID id = UUID.randomUUID();
++    try (PropertyRestore ignored = enableBedrockTrial(id)) {
++      Fixture fixture = fixture(id, 776);
++      CanopyHandover handover = new CanopyHandover(fixture.player());
++      var profile = CanopyProtocolProfile.find(776);
++      ByteBuf first = movement(profile, 0x1d, 11);
++      ByteBuf second = movement(profile, 0x20, 22);
++      try {
++        assertTrue(handover.beginBedrockMovementBuffer(fixture.source()));
++        assertTrue(handover.onServerbound(first));
++        assertTrue(handover.onServerbound(second));
++        assertEquals(2, handover.bufferedInputCount());
++        assertEquals(first.readableBytes() + second.readableBytes(), handover.bufferedInputBytes());
++
++        when(fixture.player().getConnectedServer()).thenReturn(fixture.destination());
++        handover.arrived();
++        handover.ready();
++        verify(fixture.destinationConnection(), never()).delayedWrite(any());
++        assertEquals(2, handover.bufferedInputCount(), "input remains held until PLAY readiness");
++
++        when(fixture.destinationPhase().consideredComplete()).thenReturn(true);
++        when(fixture.destinationConnection().getState()).thenReturn(StateRegistry.PLAY);
++        handover.ready();
++
++        ArgumentCaptor<Object> replayCaptor = ArgumentCaptor.forClass(Object.class);
++        verify(fixture.destinationConnection(), times(2)).delayedWrite(replayCaptor.capture());
++        List<ByteBuf> replay = replayCaptor.getAllValues().stream().map(ByteBuf.class::cast).toList();
++        try {
++          assertEquals(List.of(0x1d, 0x20), replay.stream()
++              .map(packet -> profile.serverbound(ProtocolUtils.readVarInt(packet))).toList());
++          assertEquals(List.of((byte) 11, (byte) 22), replay.stream().map(ByteBuf::readByte).toList());
++        } finally {
++          replay.forEach(ByteBuf::release);
++        }
++        assertEquals(0, handover.bufferedInputCount());
++        assertEquals(0, handover.bufferedInputBytes());
++        assertFalse(handover.active());
++      } finally {
++        first.release();
++        second.release();
++      }
++    }
++  }
++
++  private static Fixture fixture(UUID id, int protocol) {
++    ConnectedPlayer player = mock(ConnectedPlayer.class);
++    MinecraftConnection clientConnection = mock(MinecraftConnection.class);
++    ClientPlaySessionHandler clientHandler = mock(ClientPlaySessionHandler.class);
++    CanopyEntityRewriter rewriter = new CanopyEntityRewriter();
++    rewriter.enabled(false);
++    when(player.getUniqueId()).thenReturn(id);
++    when(player.getUsername()).thenReturn("BedrockFixture");
++    when(player.getProtocolVersion()).thenReturn(ProtocolVersion.getProtocolVersion(protocol));
++    when(player.getConnection()).thenReturn(clientConnection);
++    when(clientConnection.getActiveSessionHandler()).thenReturn(clientHandler);
++    when(clientHandler.getCanopyRewriter()).thenReturn(rewriter);
++    when(clientHandler.getCanopyChunkView()).thenReturn(new CanopyChunkView());
++
++    VelocityServerConnection source = backend("main");
++    VelocityServerConnection destination = backend("hold");
++    BackendConnectionPhase destinationPhase = mock(BackendConnectionPhase.class);
++    when(destinationPhase.consideredComplete()).thenReturn(false);
++    when(destination.getPhase()).thenReturn(destinationPhase);
++    when(player.getConnectedServer()).thenReturn(source);
++    return new Fixture(player, source, destination, source.getConnection(), destination.getConnection(),
++        destinationPhase);
++  }
++
++  private static VelocityServerConnection backend(String name) {
++    VelocityServerConnection backend = mock(VelocityServerConnection.class);
++    MinecraftConnection connection = mock(MinecraftConnection.class);
++    when(backend.getConnection()).thenReturn(connection);
++    when(backend.getServerInfo()).thenReturn(new ServerInfo(name, new InetSocketAddress("127.0.0.1", 25565)));
++    when(backend.getPhase()).thenReturn(BackendConnectionPhases.VANILLA);
++    when(connection.isClosed()).thenReturn(false);
++    when(connection.getState()).thenReturn(StateRegistry.PLAY);
++    return backend;
++  }
++
++  private static ByteBuf movement(CanopyProtocolProfile profile, int canonicalId, int marker) {
++    ByteBuf packet = Unpooled.buffer();
++    ProtocolUtils.writeVarInt(packet, profile.serverboundWire(canonicalId));
++    packet.writeByte(marker);
++    return packet;
++  }
++
++  private static PropertyRestore enableBedrockTrial(UUID player) {
++    PropertyRestore restore = new PropertyRestore(player, "canopy.mode", "SEAMLESS",
++        "canopy.allowSeamless", "true", "canopy.experimentalBedrockSeamless", "true");
++    CanopySwitchPolicy.markPlatform(player, CanopySwitchPolicy.Platform.BEDROCK);
++    CanopySwitchPolicy.seamless(player, true);
++    return restore;
++  }
++
++  private record Fixture(ConnectedPlayer player, VelocityServerConnection source,
++                         VelocityServerConnection destination, MinecraftConnection sourceConnection,
++                         MinecraftConnection destinationConnection, BackendConnectionPhase destinationPhase) { }
++
++  private static final class PropertyRestore implements AutoCloseable {
++    private final UUID player;
++    private final List<String> names = new ArrayList<>();
++    private final List<String> values = new ArrayList<>();
++
++    PropertyRestore(UUID player, String... nameValues) {
++      this.player = player;
++      for (int i = 0; i < nameValues.length; i += 2) {
++        String name = nameValues[i];
++        names.add(name);
++        values.add(System.getProperty(name));
++        System.setProperty(name, nameValues[i + 1]);
++      }
++    }
++
++    @Override
++    public void close() {
++      CanopySwitchPolicy.forget(player);
++      for (int i = 0; i < names.size(); i++) {
++        if (values.get(i) == null) System.clearProperty(names.get(i));
++        else System.setProperty(names.get(i), values.get(i));
++      }
++    }
++  }
++}
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyKnownPacksTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyKnownPacksTest.java
 new file mode 100644
-index 00000000..7790d1ba
+index 0000000000000000000000000000000000000000..7790d1baf46112292d674c34bcadda00747c4b82
 --- /dev/null
 +++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyKnownPacksTest.java
 @@ -0,0 +1,27 @@
@@ -5821,7 +6620,7 @@ index 00000000..7790d1ba
 +}
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyLifecycleHooksTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyLifecycleHooksTest.java
 new file mode 100644
-index 00000000..92dd602c
+index 0000000000000000000000000000000000000000..92dd602c9a5f42a75867d4c1f89cb083ba8c6b40
 --- /dev/null
 +++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyLifecycleHooksTest.java
 @@ -0,0 +1,76 @@
@@ -5903,7 +6702,7 @@ index 00000000..92dd602c
 +}
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyProtocolProfileTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyProtocolProfileTest.java
 new file mode 100644
-index 00000000..38039f7f
+index 0000000000000000000000000000000000000000..38039f7feffcfce393babc229b9ac134efdafe7f
 --- /dev/null
 +++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyProtocolProfileTest.java
 @@ -0,0 +1,137 @@
@@ -6046,7 +6845,7 @@ index 00000000..38039f7f
 +}
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyServingTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyServingTest.java
 new file mode 100644
-index 00000000..fa969ac8
+index 0000000000000000000000000000000000000000..fa969ac84e54b1a3f0a80be6039bd2cb3fba60cf
 --- /dev/null
 +++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyServingTest.java
 @@ -0,0 +1,110 @@
@@ -6162,7 +6961,7 @@ index 00000000..fa969ac8
 +}
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyShadowPromotionGateTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyShadowPromotionGateTest.java
 new file mode 100644
-index 00000000..bbe8b16d
+index 0000000000000000000000000000000000000000..bbe8b16da2fe1106e4df8775b24aa2dfab4be115
 --- /dev/null
 +++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyShadowPromotionGateTest.java
 @@ -0,0 +1,81 @@
@@ -6249,10 +7048,10 @@ index 00000000..bbe8b16d
 +}
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopySwitchPolicyTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopySwitchPolicyTest.java
 new file mode 100644
-index 00000000..fea31e4f
+index 0000000000000000000000000000000000000000..e3219650824ec3c575c25d40744c0efd3e51fe73
 --- /dev/null
 +++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopySwitchPolicyTest.java
-@@ -0,0 +1,270 @@
+@@ -0,0 +1,299 @@
 +package com.velocitypowered.proxy.connection.client;
 +
 +import static org.junit.jupiter.api.Assertions.*;
@@ -6480,6 +7279,35 @@ index 00000000..fea31e4f
 +    }
 +  }
 +
++  @Test void bedrockMovementBufferRequiresPositiveIdentityAndBothTrialFlags() {
++    String oldMode = System.getProperty("canopy.mode");
++    String oldAllowed = System.getProperty("canopy.allowSeamless");
++    String oldBedrock = System.getProperty("canopy.experimentalBedrockSeamless");
++    var bedrock = java.util.UUID.randomUUID();
++    var javaPlayer = java.util.UUID.randomUUID();
++    try {
++      System.setProperty("canopy.mode", "SEAMLESS");
++      System.clearProperty("canopy.allowSeamless");
++      System.clearProperty("canopy.experimentalBedrockSeamless");
++      markPlatform(bedrock, Platform.BEDROCK);
++      markPlatform(javaPlayer, Platform.JAVA);
++      assertFalse(mayBufferBedrockMovement(bedrock));
++      assertFalse(mayBufferBedrockMovement(javaPlayer));
++
++      System.setProperty("canopy.allowSeamless", "true");
++      assertFalse(mayBufferBedrockMovement(bedrock));
++      System.setProperty("canopy.experimentalBedrockSeamless", "true");
++      assertTrue(mayBufferBedrockMovement(bedrock));
++      assertFalse(mayUseExactHandover(bedrock));
++      assertTrue(mayUseExactHandover(javaPlayer));
++    } finally {
++      forget(bedrock); forget(javaPlayer);
++      restoreProperty("canopy.mode", oldMode);
++      restoreProperty("canopy.allowSeamless", oldAllowed);
++      restoreProperty("canopy.experimentalBedrockSeamless", oldBedrock);
++    }
++  }
++
 +  @Test void globalModeApiChangesDefaultsWithoutReplacingPlayerOverrides() {
 +    String oldMode = System.getProperty("canopy.mode");
 +    String oldNoRespawn = System.getProperty("canopy.noRespawn");
@@ -6521,5 +7349,311 @@ index 00000000..fea31e4f
 +
 +  private static void restoreProperty(String property, String value) {
 +    if (value == null) System.clearProperty(property); else System.setProperty(property, value);
++  }
++}
+diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/ClientPlaySessionHandlerBedrockHandoverTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/ClientPlaySessionHandlerBedrockHandoverTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..43c0e44f6d3fab3e3bc7bc2879ee91cd3499c972
+--- /dev/null
++++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/ClientPlaySessionHandlerBedrockHandoverTest.java
+@@ -0,0 +1,300 @@
++/*
++ * Copyright (C) 2018-2025 Velocity Contributors
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
++ */
++
++package com.velocitypowered.proxy.connection.client;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertArrayEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.times;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++import com.velocitypowered.api.network.ProtocolVersion;
++import com.velocitypowered.api.proxy.server.ServerInfo;
++import com.velocitypowered.proxy.VelocityServer;
++import com.velocitypowered.proxy.connection.MinecraftConnection;
++import com.velocitypowered.proxy.connection.backend.BackendConnectionPhases;
++import com.velocitypowered.proxy.connection.backend.VelocityServerConnection;
++import com.velocitypowered.proxy.protocol.ProtocolUtils;
++import com.velocitypowered.proxy.protocol.StateRegistry;
++import com.velocitypowered.proxy.protocol.packet.PluginMessagePacket;
++import io.netty.buffer.ByteBuf;
++import io.netty.buffer.ByteBufUtil;
++import io.netty.buffer.Unpooled;
++import io.netty.util.ReferenceCountUtil;
++import java.lang.reflect.Field;
++import java.net.InetSocketAddress;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.UUID;
++import org.junit.jupiter.api.Test;
++import org.mockito.ArgumentCaptor;
++
++class ClientPlaySessionHandlerBedrockHandoverTest {
++  @Test
++  void movementIsBufferedBeforeNullConnectedServerEarlyReturn() throws Exception {
++    UUID id = UUID.randomUUID();
++    try (PropertyRestore ignored = enableBedrockTrial(id)) {
++      Fixture fixture = fixture(id, 776);
++      CanopyHandover handover = fixture.handler().getCanopyHandover();
++      ByteBuf movement = movement(776, 0x1d, 73);
++      try {
++        assertTrue(handover.beginBedrockMovementBuffer(fixture.source()));
++        when(fixture.player().getConnectedServer()).thenReturn(null);
++
++        fixture.handler().handleUnknown(movement);
++
++        assertEquals(1, handover.bufferedInputCount());
++        assertEquals(movement.readableBytes(), handover.bufferedInputBytes());
++        verify(fixture.sourceConnection(), times(1)).write(org.mockito.ArgumentMatchers.any());
++      } finally {
++        movement.release();
++        handover.abandon();
++      }
++    }
++  }
++
++  @Test
++  void byteOverflowCancelsToSourceAndForwardsTheTriggeringMovement() throws Exception {
++    UUID id = UUID.randomUUID();
++    try (PropertyRestore ignored = enableBedrockTrial(id)) {
++      Fixture fixture = fixture(id, 776);
++      CanopyHandover handover = fixture.handler().getCanopyHandover();
++      ByteBuf prefix = Unpooled.buffer(CanopyHandover.MAX_BUFFERED_BYTES);
++      ByteBuf trigger = movement(776, 0x1e, 91);
++      ProtocolUtils.writeVarInt(prefix, CanopyProtocolProfile.find(776).serverboundWire(0x1d));
++      prefix.writeZero(CanopyHandover.MAX_BUFFERED_BYTES - prefix.readableBytes());
++      try {
++        assertTrue(handover.beginBedrockMovementBuffer(fixture.source()));
++        fixture.handler().handleUnknown(prefix);
++        assertEquals(1, handover.bufferedInputCount());
++        assertEquals(CanopyHandover.MAX_BUFFERED_BYTES, handover.bufferedInputBytes());
++
++        fixture.handler().handleUnknown(trigger);
++
++        assertEquals(0, handover.bufferedInputCount());
++        assertEquals(0, handover.bufferedInputBytes());
++        assertFalse(handover.active(), "overflow fallback resets the handover");
++        ArgumentCaptor<Object> replayCaptor = ArgumentCaptor.forClass(Object.class);
++        verify(fixture.sourceConnection()).delayedWrite(replayCaptor.capture());
++        ByteBuf replayedPrefix = (ByteBuf) replayCaptor.getValue();
++        assertArrayEquals(ByteBufUtil.getBytes(prefix), ByteBufUtil.getBytes(replayedPrefix));
++
++        ArgumentCaptor<Object> writes = ArgumentCaptor.forClass(Object.class);
++        verify(fixture.sourceConnection(), times(3)).write(writes.capture());
++        List<Object> written = writes.getAllValues();
++        assertEquals(CanopyHandover.CUT_CHANNEL, ((PluginMessagePacket) written.get(0)).getChannel());
++        assertEquals(CanopyHandover.CANCEL_CHANNEL, ((PluginMessagePacket) written.get(1)).getChannel());
++        assertArrayEquals(ByteBufUtil.getBytes(trigger), ByteBufUtil.getBytes((ByteBuf) written.get(2)));
++        ReferenceCountUtil.release(replayedPrefix);
++        ReferenceCountUtil.release(written.get(0));
++        ReferenceCountUtil.release(written.get(1));
++        ReferenceCountUtil.release(written.get(2));
++      } finally {
++        prefix.release();
++        trigger.release();
++        handover.abandon();
++      }
++    }
++  }
++
++  @Test
++  void packetCountOverflowCancelsToSourceAndReleasesTheQueue() throws Exception {
++    UUID id = UUID.randomUUID();
++    try (PropertyRestore ignored = enableBedrockTrial(id)) {
++      Fixture fixture = fixture(id, 776);
++      CanopyHandover handover = fixture.handler().getCanopyHandover();
++      ByteBuf movement = movement(776, 0x1d, 23);
++      try {
++        assertTrue(handover.beginBedrockMovementBuffer(fixture.source()));
++        for (int index = 0; index < CanopyHandover.MAX_BUFFERED; index++) {
++          fixture.handler().handleUnknown(movement);
++        }
++        assertEquals(CanopyHandover.MAX_BUFFERED, handover.bufferedInputCount());
++        assertTrue(handover.bufferedInputBytes() < CanopyHandover.MAX_BUFFERED_BYTES);
++
++        fixture.handler().handleUnknown(movement);
++
++        assertFalse(handover.active());
++        assertEquals(0, handover.bufferedInputCount());
++        assertEquals(0, handover.bufferedInputBytes());
++        verify(fixture.sourceConnection(), times(CanopyHandover.MAX_BUFFERED))
++            .delayedWrite(org.mockito.ArgumentMatchers.any());
++      } finally {
++        movement.release();
++        handover.abandon();
++      }
++    }
++  }
++
++  @Test
++  void disconnectReleasesBufferedMovement() throws Exception {
++    UUID id = UUID.randomUUID();
++    try (PropertyRestore ignored = enableBedrockTrial(id)) {
++      Fixture fixture = fixture(id, 776);
++      CanopyHandover handover = fixture.handler().getCanopyHandover();
++      ByteBuf movement = movement(776, 0x1d, 19);
++      try {
++        assertTrue(handover.beginBedrockMovementBuffer(fixture.source()));
++        fixture.handler().handleUnknown(movement);
++        assertEquals(1, handover.bufferedInputCount());
++
++        fixture.handler().disconnected();
++
++        assertFalse(handover.active());
++        assertEquals(0, handover.bufferedInputCount());
++        assertEquals(0, handover.bufferedInputBytes());
++      } finally {
++        movement.release();
++        handover.abandon();
++      }
++    }
++  }
++
++  @Test
++  void timedOutCutRemainsBoundedUntilExplicitCancellation() throws Exception {
++    UUID id = UUID.randomUUID();
++    try (PropertyRestore ignored = enableBedrockTrial(id)) {
++      Fixture fixture = fixture(id, 776);
++      CanopyHandover handover = fixture.handler().getCanopyHandover();
++      ByteBuf first = movement(776, 0x1d, 20);
++      ByteBuf afterTimeout = movement(776, 0x20, 21);
++      try {
++        assertTrue(handover.beginBedrockMovementBuffer(fixture.source()));
++        fixture.handler().handleUnknown(first);
++
++        Field stateSince = CanopyHandover.class.getDeclaredField("stateSince");
++        stateSince.setAccessible(true);
++        stateSince.setLong(handover, System.currentTimeMillis() - 20_000L);
++        fixture.handler().handleUnknown(afterTimeout);
++
++        assertTrue(handover.active(), "timeout is diagnostic and does not assume destination state was applied");
++        assertEquals(2, handover.bufferedInputCount());
++        assertTrue(handover.bufferedInputBytes() <= CanopyHandover.MAX_BUFFERED_BYTES);
++
++        handover.cancel();
++
++        assertFalse(handover.active());
++        assertEquals(0, handover.bufferedInputCount());
++        assertEquals(0, handover.bufferedInputBytes());
++      } finally {
++        first.release();
++        afterTimeout.release();
++        handover.abandon();
++      }
++    }
++  }
++
++  @Test
++  void ordinaryJavaRawMovementStillForwardsDirectly() throws Exception {
++    UUID id = UUID.randomUUID();
++    try (PropertyRestore ignored = enableJavaSession(id)) {
++      Fixture fixture = fixture(id, 776);
++      ByteBuf movement = movement(776, 0x1d, 17);
++      try {
++        fixture.handler().handleUnknown(movement);
++
++        ArgumentCaptor<Object> write = ArgumentCaptor.forClass(Object.class);
++        verify(fixture.sourceConnection()).write(write.capture());
++        ByteBuf forwarded = (ByteBuf) write.getValue();
++        assertArrayEquals(ByteBufUtil.getBytes(movement), ByteBufUtil.getBytes(forwarded));
++        assertEquals(0, fixture.handler().getCanopyHandover().bufferedInputCount());
++        ReferenceCountUtil.release(forwarded);
++      } finally {
++        movement.release();
++      }
++    }
++  }
++
++  private static Fixture fixture(UUID id, int protocol) {
++    ConnectedPlayer player = mock(ConnectedPlayer.class);
++    VelocityServer server = mock(VelocityServer.class);
++    MinecraftConnection clientConnection = mock(MinecraftConnection.class);
++    when(player.getUniqueId()).thenReturn(id);
++    when(player.getUsername()).thenReturn("FixtureClient");
++    when(player.getConnection()).thenReturn(clientConnection);
++    when(player.getProtocolVersion()).thenReturn(ProtocolVersion.getProtocolVersion(protocol));
++    when(clientConnection.getProtocolVersion()).thenReturn(ProtocolVersion.getProtocolVersion(protocol));
++    ClientPlaySessionHandler handler = new ClientPlaySessionHandler(server, player);
++    when(clientConnection.getActiveSessionHandler()).thenReturn(handler);
++
++    VelocityServerConnection source = mock(VelocityServerConnection.class);
++    MinecraftConnection sourceConnection = mock(MinecraftConnection.class);
++    when(source.getConnection()).thenReturn(sourceConnection);
++    when(source.getServerInfo()).thenReturn(new ServerInfo("main",
++        new InetSocketAddress("127.0.0.1", 25565)));
++    when(source.getPhase()).thenReturn(BackendConnectionPhases.VANILLA);
++    when(sourceConnection.isClosed()).thenReturn(false);
++    when(sourceConnection.getState()).thenReturn(StateRegistry.PLAY);
++    when(player.getConnectedServer()).thenReturn(source);
++    return new Fixture(player, source, sourceConnection, handler);
++  }
++
++  private static ByteBuf movement(int protocol, int canonicalId, int marker) {
++    ByteBuf packet = Unpooled.buffer();
++    ProtocolUtils.writeVarInt(packet, CanopyProtocolProfile.find(protocol).serverboundWire(canonicalId));
++    packet.writeByte(marker);
++    return packet;
++  }
++
++  private static PropertyRestore enableBedrockTrial(UUID player) {
++    PropertyRestore restore = new PropertyRestore(player, "canopy.mode", "SEAMLESS",
++        "canopy.allowSeamless", "true", "canopy.experimentalBedrockSeamless", "true");
++    CanopySwitchPolicy.markPlatform(player, CanopySwitchPolicy.Platform.BEDROCK);
++    CanopySwitchPolicy.seamless(player, true);
++    return restore;
++  }
++
++  private static PropertyRestore enableJavaSession(UUID player) {
++    PropertyRestore restore = new PropertyRestore(player, "canopy.mode", "SEAMLESS",
++        "canopy.allowSeamless", "false", "canopy.experimentalBedrockSeamless", "false");
++    CanopySwitchPolicy.markPlatform(player, CanopySwitchPolicy.Platform.JAVA);
++    CanopySwitchPolicy.seamless(player, true);
++    return restore;
++  }
++
++  private record Fixture(ConnectedPlayer player, VelocityServerConnection source,
++                         MinecraftConnection sourceConnection, ClientPlaySessionHandler handler) { }
++
++  private static final class PropertyRestore implements AutoCloseable {
++    private final UUID player;
++    private final List<String> names = new ArrayList<>();
++    private final List<String> values = new ArrayList<>();
++
++    PropertyRestore(UUID player, String... nameValues) {
++      this.player = player;
++      for (int i = 0; i < nameValues.length; i += 2) {
++        String name = nameValues[i];
++        names.add(name);
++        values.add(System.getProperty(name));
++        System.setProperty(name, nameValues[i + 1]);
++      }
++    }
++
++    @Override
++    public void close() {
++      CanopySwitchPolicy.forget(player);
++      for (int i = 0; i < names.size(); i++) {
++        if (values.get(i) == null) System.clearProperty(names.get(i));
++        else System.setProperty(names.get(i), values.get(i));
++      }
++    }
 +  }
 +}

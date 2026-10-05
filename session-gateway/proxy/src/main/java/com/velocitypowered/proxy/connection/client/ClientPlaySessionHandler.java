@@ -553,13 +553,14 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
   @Override
   public void handleUnknown(ByteBuf buf) {
     CanopyLifecycleHooks.trace(player.getUniqueId(), "serverbound", buf);
+    // Raw PLAY packets include the movement IDs Velocity does not register as MinecraftPacket instances.
+    // Apply the explicit handover allow-list before the transition can temporarily clear connectedServer.
+    if (getCanopyHandover().onServerbound(buf)) {
+      return;
+    }
     VelocityServerConnection serverConnection = player.getConnectedServer();
     if (serverConnection == null) {
       // No server connection yet, probably transitioning.
-      return;
-    }
-    // An exact shard handover holds the player's input back between the cut and the destination being ready.
-    if (getCanopyHandover().onServerbound(buf)) {
       return;
     }
 

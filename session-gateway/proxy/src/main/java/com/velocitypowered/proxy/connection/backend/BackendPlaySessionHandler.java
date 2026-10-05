@@ -345,16 +345,32 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
       playerSessionHandler.getCanopyShadow().acknowledgeAndPromote(serverConn, transferId);
       return true;
     }
-    if (com.velocitypowered.proxy.connection.client.CanopyHandover.SWITCH_CHANNEL.equals(packet.getChannel())
-        && com.velocitypowered.proxy.connection.client.CanopyHandover.requestsExact(packet.content())) {
-      playerSessionHandler.getCanopyHandover().begin(serverConn);
-      // With a shadow on the target, the crossing promotes it rather than opening a new connection.
+    if (com.velocitypowered.proxy.connection.client.CanopyHandover.SWITCH_CHANNEL.equals(packet.getChannel())) {
       String target = com.velocitypowered.proxy.connection.client.CanopyHandover.switchTarget(packet.content());
-      java.util.UUID transferId = com.velocitypowered.proxy.connection.client.CanopyHandover
-          .switchTransferId(packet.content());
-      if (target != null && transferId != null
-          && playerSessionHandler.getCanopyShadow().armPromotion(target, serverConn, transferId)) {
-        return true;
+      if (com.velocitypowered.proxy.connection.client.CanopyHandover.requestsExact(packet.content())) {
+        com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.Platform platform =
+            com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.platform(
+                serverConn.getPlayer().getUniqueId());
+        boolean mayPromoteShadow = false;
+        if (platform == com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.Platform.BEDROCK) {
+          if (target != null && !target.equalsIgnoreCase(serverConn.getServerInfo().getName())
+              && server.getServer(target).isPresent()) {
+            mayPromoteShadow = playerSessionHandler.getCanopyHandover()
+                .beginBedrockMovementBuffer(serverConn);
+          }
+        } else if (platform == com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.Platform.JAVA) {
+          playerSessionHandler.getCanopyHandover().begin(serverConn);
+          mayPromoteShadow = true;
+        }
+        // With a shadow on the target, the crossing promotes it rather than opening a new connection.
+        if (mayPromoteShadow) {
+          java.util.UUID transferId = com.velocitypowered.proxy.connection.client.CanopyHandover
+              .switchTransferId(packet.content());
+          if (target != null && transferId != null
+              && playerSessionHandler.getCanopyShadow().armPromotion(target, serverConn, transferId)) {
+            return true;
+          }
+        }
       }
     } else if (com.velocitypowered.proxy.connection.client.CanopyHandover.READY_CHANNEL.equals(packet.getChannel())) {
       playerSessionHandler.getCanopyHandover().ready();

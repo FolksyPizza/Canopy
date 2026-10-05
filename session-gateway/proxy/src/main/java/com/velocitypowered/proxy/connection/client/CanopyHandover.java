@@ -20,6 +20,7 @@ package com.velocitypowered.proxy.connection.client;
 import com.velocitypowered.proxy.connection.MinecraftConnection;
 import com.velocitypowered.proxy.connection.backend.VelocityServerConnection;
 import com.velocitypowered.proxy.protocol.ProtocolUtils;
+import com.velocitypowered.proxy.protocol.StateRegistry;
 import com.velocitypowered.proxy.protocol.packet.PluginMessagePacket;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
@@ -75,7 +76,8 @@ public final class CanopyHandover {
   /** Report a slow handoff without treating a timeout as proof that player state was restored. */
   private static final long CUT_TIMEOUT_MILLIS = 10_000L;
   private static final long ARRIVAL_TIMEOUT_MILLIS = 3_000L;
-  private static final int MAX_BUFFERED = 2_000;
+  static final int MAX_BUFFERED = 2_000;
+  static final int MAX_BUFFERED_BYTES = 256 * 1024;
 
   private enum State { IDLE, CUT, ARRIVING }
 
@@ -83,7 +85,10 @@ public final class CanopyHandover {
   private final ArrayDeque<ByteBuf> buffered = new ArrayDeque<>();
   private State state = State.IDLE;
   private long stateSince;
+  private long bufferedBytes;
   private VelocityServerConnection source;
+  private boolean bedrockInputBuffer;
+  private boolean bedrockBufferOverflowed;
   private boolean timeoutReported;
   private boolean bufferOverflowReported;
   private boolean arrivalRepairAllowed;
@@ -211,6 +216,26 @@ public final class CanopyHandover {
     smc.write(new PluginMessagePacket(CUT_CHANNEL, Unpooled.EMPTY_BUFFER));
   }
 
+  /** Arm a bounded movement-only queue for an explicitly enabled, positively classified Bedrock seam. */
+  public synchronized boolean beginBedrockMovementBuffer(VelocityServerConnection source) {
+    if (!CanopySwitchPolicy.mayBufferBedrockMovement(player.getUniqueId()) || state != State.IDLE
+        || CanopyProtocolProfile.find(player.getProtocolVersion().getProtocol()) == null
+        || source == null || player.getConnectedServer() != source) {
+      return false;
+    }
+    MinecraftConnection smc = source.getConnection();
+    if (smc == null || smc.isClosed() || !backendPlayReady(source)) {
+      return false;
+    }
+    this.source = source;
+    this.state = State.CUT;
+    this.stateSince = System.currentTimeMillis();
+    this.bedrockInputBuffer = true;
+    audit("input.bedrock_buffer_armed");
+    smc.write(new PluginMessagePacket(CUT_CHANNEL, Unpooled.EMPTY_BUFFER));
+    return true;
+  }
+
   /** A durable dead session has no gameplay input to cut; CSG routes its actual respawn request. */
   public synchronized void beginRespawn() {
     if (state != State.IDLE) throw new IllegalStateException("Another handoff is active");
@@ -248,9 +273,31 @@ public final class CanopyHandover {
     if (state == State.IDLE) {
       return;
     }
+    VelocityServerConnection destination = player.getConnectedServer();
+    if (bedrockInputBuffer) {
+      if (state != State.ARRIVING || !destinationPlayReady(destination)) {
+        audit("input.ready_deferred");
+        return;
+      }
+      if (bedrockBufferOverflowed) {
+        for (ByteBuf packet : arrivalView.drain()) player.getConnection().delayedWrite(packet);
+        player.getConnection().flush();
+        audit("input.overflow_fallback_ready");
+        reset();
+        return;
+      }
+    }
     for (ByteBuf packet : arrivalView.drain()) player.getConnection().delayedWrite(packet);
     player.getConnection().flush();
-    flushTo(player.getConnectedServer());
+    if (!flushTo(destination)) {
+      if (bedrockInputBuffer) {
+        audit("input.ready_deferred");
+        return;
+      }
+      // Preserve Java exact handover's existing behavior if its target disappeared: release the held queue and
+      // finish the handover rather than keeping the Java session armed indefinitely.
+      release();
+    }
     audit("input.ready");
     reset();
   }
@@ -268,9 +315,10 @@ public final class CanopyHandover {
       return;
     }
     audit("input.cancel");
-    if (source != null && source.getConnection() != null && !source.getConnection().isClosed()) {
+    if (source != null && source.getConnection() != null && !source.getConnection().isClosed()
+        && (!bedrockInputBuffer || player.getConnectedServer() == source)) {
       source.getConnection().write(new PluginMessagePacket(CANCEL_CHANNEL, Unpooled.EMPTY_BUFFER));
-      flushTo(source);
+      if (!flushTo(source)) release();
     } else {
       release();
     }
@@ -283,7 +331,20 @@ public final class CanopyHandover {
    */
   public synchronized boolean onServerbound(ByteBuf buf) {
     CanopyProtocolProfile profile = CanopyProtocolProfile.find(player.getProtocolVersion().getProtocol());
-    if (profile != null && profile.serverbound(peekId(buf)) == SB_CLIENT_COMMAND) {
+    if (profile == null) {
+      if (bedrockInputBuffer && state != State.IDLE) {
+        audit("input.unsupported_profile");
+        if (state == State.CUT && player.getConnectedServer() == source) {
+          cancel();
+          return false;
+        }
+        bedrockBufferOverflowed = true;
+        release();
+        return true;
+      }
+      return false;
+    }
+    if (profile.serverbound(peekId(buf)) == SB_CLIENT_COMMAND) {
       int at = buf.readerIndex();
       try {
         ProtocolUtils.readVarInt(buf);
@@ -301,12 +362,38 @@ public final class CanopyHandover {
       logger.warn("Canopy handover for {} timed out in {}; holding input until readiness or cancellation",
           player.getUsername(), state);
     }
-    int id = CanopyProtocolProfile.find(player.getProtocolVersion().getProtocol()).serverbound(peekId(buf));
+    int id = profile.serverbound(peekId(buf));
+    if (bedrockInputBuffer) {
+      if (bedrockBufferOverflowed) {
+        return bedrockMovementInput(id) || !isForwardableAcknowledgement(id);
+      }
+      if (bedrockMovementInput(id)) {
+        int bytes = buf.readableBytes();
+        if (buffered.size() < MAX_BUFFERED && bytes <= MAX_BUFFERED_BYTES - bufferedBytes) {
+          buffered.add(buf.retainedDuplicate());
+          bufferedBytes += bytes;
+          return true;
+        }
+        audit("input.buffer_overflow");
+        if (state == State.CUT && player.getConnectedServer() == source && backendPlayReady(source)) {
+          // Source is still authoritative: cancel this projected crossing and let this packet follow the queued
+          // prefix back to that source in normal order.
+          cancel();
+          return false;
+        }
+        bedrockBufferOverflowed = true;
+        release();
+        return true;
+      }
+      return !isForwardableAcknowledgement(id);
+    }
     switch (id) {
       case SB_MOVE_POS, SB_MOVE_POS_ROT, SB_MOVE_ROT, SB_MOVE_STATUS_ONLY,
           SB_PLAYER_COMMAND, SB_PLAYER_INPUT, SB_SET_CARRIED_ITEM -> {
+        int bytes = buf.readableBytes();
         if (buffered.size() < MAX_BUFFERED) {
           buffered.add(buf.retainedDuplicate());
+          bufferedBytes += bytes;
         } else if (!bufferOverflowReported) {
           bufferOverflowReported = true; audit("input.buffer_overflow");
         }
@@ -362,11 +449,10 @@ public final class CanopyHandover {
     return System.currentTimeMillis() - stateSince > limit;
   }
 
-  private void flushTo(VelocityServerConnection target) {
+  private boolean flushTo(VelocityServerConnection target) {
     MinecraftConnection smc = target == null ? null : target.getConnection();
-    if (smc == null || smc.isClosed()) {
-      release();
-      return;
+    if (smc == null || smc.isClosed() || (bedrockInputBuffer && !backendPlayReady(target))) {
+      return false;
     }
     int count = buffered.size();
     // Entity ids in the held input are translated now, for the backend it is replayed to.
@@ -374,6 +460,7 @@ public final class CanopyHandover {
     boolean translate = rewriter.active(player.getProtocolVersion());
     ByteBuf packet;
     while ((packet = buffered.poll()) != null) {
+      bufferedBytes -= packet.readableBytes();
       if (translate) {
         ByteBuf out = rewriter.processServerbound(packet);
         if (out != packet) {
@@ -390,13 +477,16 @@ public final class CanopyHandover {
     logger.info("Canopy handover for {}: replayed {} input packet(s) to {}; chunks so far: {}", player.getUsername(),
         count, target.getServerInfo().getName(),
         ((ClientPlaySessionHandler) player.getConnection().getActiveSessionHandler()).getCanopyChunkView().stats());
+    return true;
   }
 
   private void release() {
     ByteBuf packet;
     while ((packet = buffered.poll()) != null) {
+      bufferedBytes -= packet.readableBytes();
       packet.release();
     }
+    bufferedBytes = 0;
   }
 
   private void reset() {
@@ -404,7 +494,45 @@ public final class CanopyHandover {
     state = State.IDLE;
     timeoutReported = false; bufferOverflowReported = false;
     arrivalRepairAllowed = false;
+    bedrockInputBuffer = false;
+    bedrockBufferOverflowed = false;
+    bufferedBytes = 0;
     source = null;
+  }
+
+  synchronized int bufferedInputCount() {
+    return buffered.size();
+  }
+
+  synchronized long bufferedInputBytes() {
+    return bufferedBytes;
+  }
+
+  private boolean destinationPlayReady(VelocityServerConnection candidate) {
+    return candidate != null && candidate != source && player.getConnectedServer() == candidate
+        && backendPlayReady(candidate);
+  }
+
+  private static boolean backendPlayReady(VelocityServerConnection candidate) {
+    if (candidate == null || candidate.getConnection() == null || candidate.getConnection().isClosed()) {
+      return false;
+    }
+    return candidate.getPhase().consideredComplete() && candidate.getConnection().getState() == StateRegistry.PLAY;
+  }
+
+  private static boolean bedrockMovementInput(int id) {
+    return switch (id) {
+      case SB_MOVE_POS, SB_MOVE_POS_ROT, SB_MOVE_ROT, SB_MOVE_STATUS_ONLY,
+          SB_PLAYER_COMMAND, SB_PLAYER_INPUT, SB_SET_CARRIED_ITEM -> true;
+      default -> false;
+    };
+  }
+
+  private static boolean isForwardableAcknowledgement(int id) {
+    return switch (id) {
+      case SB_CHUNK_BATCH_RECEIVED, SB_CLIENT_TICK_END, SB_PLAYER_LOADED, SB_PONG, SB_ACCEPT_TELEPORTATION -> true;
+      default -> false;
+    };
   }
 
   private void audit(String event) {

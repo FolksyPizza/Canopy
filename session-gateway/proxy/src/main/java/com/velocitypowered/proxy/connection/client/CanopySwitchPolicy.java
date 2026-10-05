@@ -82,6 +82,12 @@ public final class CanopySwitchPolicy {
     return platform(player) == Platform.JAVA && requested(player) == Mode.SEAMLESS;
   }
 
+  /** Projected movement buffering is limited to positively identified Bedrock trial sessions. */
+  public static boolean mayBufferBedrockMovement(UUID player) {
+    return platform(player) == Platform.BEDROCK && requested(player) == Mode.SEAMLESS
+        && bedrockTrialEnabled();
+  }
+
   private static boolean bedrockTrialEnabled() {
     return Boolean.getBoolean("canopy.allowSeamless")
         && Boolean.getBoolean("canopy.experimentalBedrockSeamless");
