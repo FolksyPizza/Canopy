@@ -1,0 +1,197 @@
+/*
+ * Copyright (C) 2018-2023 Velocity Contributors
+ * Copyright (C) 2026 Canopy Contributors
+ * Modified by Canopy contributors in 2026.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+package com.velocitypowered.proxy.connection.util;
+
+import com.google.common.collect.ImmutableList;
+import com.spotify.futures.CompletableFutures;
+import com.velocitypowered.api.network.ProtocolVersion;
+import com.velocitypowered.api.proxy.server.PingOptions;
+import com.velocitypowered.api.proxy.server.RegisteredServer;
+import com.velocitypowered.api.proxy.server.ServerPing;
+import com.velocitypowered.api.util.Favicon;
+import com.velocitypowered.api.util.ModInfo;
+import com.velocitypowered.proxy.VelocityServer;
+import com.velocitypowered.proxy.config.PingPassthroughMode;
+import com.velocitypowered.proxy.config.VelocityConfiguration;
+import com.velocitypowered.proxy.server.VelocityRegisteredServer;
+import java.net.InetSocketAddress;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Locale;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
+import net.kyori.adventure.text.Component;
+
+/**
+ * Common utilities for handling server list ping results.
+ */
+public class ServerListPingHandler {
+
+  private final VelocityServer server;
+
+  public ServerListPingHandler(VelocityServer server) {
+    this.server = server;
+  }
+
+  private ServerPing constructLocalPing(ProtocolVersion version) {
+    VelocityConfiguration configuration = server.getConfiguration();
+    List<ServerPing.SamplePlayer> samplePlayers;
+    if (configuration.getSamplePlayersInPing()) {
+      List<ServerPing.SamplePlayer> unshuffledPlayers = server.getAllPlayers().stream()
+          .map(p -> {
+            if (p.getPlayerSettings().isClientListingAllowed()) {
+              return new ServerPing.SamplePlayer(p.getUsername(), p.getUniqueId());
+            } else {
+              return ServerPing.SamplePlayer.ANONYMOUS;
+            }
+          })
+          .collect(Collectors.toList());
+      Collections.shuffle(unshuffledPlayers);
+      samplePlayers = unshuffledPlayers.subList(0, Math.min(12, unshuffledPlayers.size()));
+    } else {
+      samplePlayers = ImmutableList.of();
+    }
+    return new ServerPing(
+        localVersion(version),
+        new ServerPing.Players(server.getPlayerCount(), configuration.getShowMaxPlayers(),
+            samplePlayers),
+        configuration.getMotd(),
+        configuration.getFavicon().orElse(null),
+        configuration.isAnnounceForge() ? ModInfo.DEFAULT : null
+    );
+  }
+
+  static ServerPing.Version localVersion(ProtocolVersion version) {
+    if (version == ProtocolVersion.UNKNOWN) {
+      version = ProtocolVersion.MAXIMUM_VERSION;
+    }
+    return new ServerPing.Version(version.getProtocol(),
+        "Canopy " + ProtocolVersion.SUPPORTED_VERSION_STRING);
+  }
+
+  private CompletableFuture<ServerPing> attemptPingPassthrough(VelocityInboundConnection connection,
+      PingPassthroughMode mode, List<String> servers, ProtocolVersion responseProtocolVersion, String virtualHostStr) {
+    ServerPing fallback = constructLocalPing(connection.getProtocolVersion());
+    List<CompletableFuture<ServerPing>> pings = new ArrayList<>();
+    for (String s : servers) {
+      Optional<RegisteredServer> rs = server.getServer(s);
+      if (rs.isEmpty()) {
+        continue;
+      }
+      VelocityRegisteredServer vrs = (VelocityRegisteredServer) rs.get();
+      pings.add(vrs.ping(connection.getConnection().eventLoop(), PingOptions.builder()
+              .version(responseProtocolVersion).virtualHost(virtualHostStr).build()));
+    }
+    if (pings.isEmpty()) {
+      return CompletableFuture.completedFuture(fallback);
+    }
+
+    CompletableFuture<List<ServerPing>> pingResponses = CompletableFutures.successfulAsList(pings,
+        (ex) -> fallback);
+
+    // Return early if ping passthrough is not enabled
+    if (!mode.enabled()) {
+      return CompletableFuture.completedFuture(fallback);
+    }
+
+    return pingResponses.thenApply(responses -> {
+      // Find the first non-fallback
+      for (ServerPing response : responses) {
+        if (response == fallback) {
+          continue;
+        }
+
+        ServerPing.Version version;
+        if (mode.version()) {
+          version = response.getVersion();
+        } else {
+          version = fallback.getVersion();
+        }
+
+        ServerPing.Players players;
+        if (mode.players()) {
+          players = response.getPlayers().orElse(null);
+        } else {
+          players = fallback.getPlayers().orElse(null);
+        }
+
+        Component description;
+        if (mode.description()) {
+          if (response.getDescriptionComponent() != null) {
+            description = response.getDescriptionComponent();
+          } else {
+            description = Component.empty();
+          }
+        } else {
+          description = fallback.getDescriptionComponent();
+        }
+
+        Favicon favicon;
+        if (mode.favicon()) {
+          favicon = response.getFavicon().orElse(null);
+        } else {
+          favicon = fallback.getFavicon().orElse(null);
+        }
+
+        ModInfo modinfo;
+        if (mode.modinfo()) {
+          modinfo = response.getModinfo().orElse(null);
+        } else {
+          modinfo = fallback.getModinfo().orElse(null);
+        }
+
+        return new ServerPing(
+            version,
+            players,
+            description,
+            favicon,
+            modinfo
+        );
+      }
+      return fallback;
+    });
+  }
+
+  /**
+   * Fetches the "default" server ping for a player.
+   *
+   * @param connection the connection
+   * @return a future with the initial ping result
+   */
+  public CompletableFuture<ServerPing> getInitialPing(VelocityInboundConnection connection) {
+    VelocityConfiguration configuration = server.getConfiguration();
+    ProtocolVersion shownVersion = connection.getProtocolVersion().isSupported()
+        ? connection.getProtocolVersion() : ProtocolVersion.MAXIMUM_VERSION;
+    PingPassthroughMode passthroughMode = configuration.getPingPassthrough();
+
+    if (!passthroughMode.enabled()) {
+      return CompletableFuture.completedFuture(constructLocalPing(shownVersion));
+    } else {
+      String virtualHostStr = connection.getVirtualHost().map(InetSocketAddress::getHostString)
+          .map(str -> str.toLowerCase(Locale.ROOT))
+          .orElse("");
+      List<String> serversToTry = server.getConfiguration().getForcedHosts().getOrDefault(
+          virtualHostStr, server.getConfiguration().getAttemptConnectionOrder());
+      return attemptPingPassthrough(connection, passthroughMode, serversToTry, shownVersion, virtualHostStr);
+    }
+  }
+}

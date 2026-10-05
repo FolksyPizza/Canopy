@@ -22,7 +22,7 @@ player.
 | --- | --- |
 | `src/` | **Canopy shard plugin** — a Paper/Folia plugin that owns a world slice, tracks tile versions and per-region metrics, coordinates with peers over gRPC, and hands players across the seam. |
 | `velocity-plugin/` | **CanopySwitch** — a small plugin, loaded on the Session Gateway, that performs the proxy-side server switch when a shard requests a handover on the `canopy:switch` channel. |
-| `session-gateway/` | **Canopy Session Gateway** — the changes that turn a stock proxy into a seamless one. Built on the Velocity protocol (a fork of the Velocity proxy); see the folder's README for the base revision, the source overlay, and the patch. |
+| `session-gateway/` | **Canopy Session Gateway** — a seamless-session layer built on the Velocity proxy engine. It speaks Minecraft Java protocol to clients (Geyser translates Bedrock sessions) and retains Velocity's backend connection and forwarding machinery; see the folder's README for the base revision, source overlay, and patch. |
 
 ## How it works
 

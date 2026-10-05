@@ -1,8 +1,16 @@
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/MinecraftConnection.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/MinecraftConnection.java
-index 92679a2c11927ff989c5b963bb9f2b4f90a05846..111edd559a981a2585b7f9a0216b5dc96231b132 100644
+index 92679a2c..6d91a88b 100644
 --- a/proxy/src/main/java/com/velocitypowered/proxy/connection/MinecraftConnection.java
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/MinecraftConnection.java
-@@ -33,6 +33,7 @@ import com.velocitypowered.natives.encryption.VelocityCipher;
+@@ -1,5 +1,7 @@
+ /*
+  * Copyright (C) 2018-2023 Velocity Contributors
++ * Copyright (C) 2026 Canopy Contributors
++ * Modified by Canopy contributors in 2026.
+  *
+  * This program is free software: you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -33,6 +35,7 @@ import com.velocitypowered.natives.encryption.VelocityCipher;
  import com.velocitypowered.natives.encryption.VelocityCipherFactory;
  import com.velocitypowered.natives.util.Natives;
  import com.velocitypowered.proxy.VelocityServer;
@@ -10,7 +18,7 @@ index 92679a2c11927ff989c5b963bb9f2b4f90a05846..111edd559a981a2585b7f9a0216b5dc9
  import com.velocitypowered.proxy.connection.client.ConnectedPlayer;
  import com.velocitypowered.proxy.connection.client.HandshakeSessionHandler;
  import com.velocitypowered.proxy.connection.client.InitialLoginSessionHandler;
-@@ -142,6 +143,7 @@ public class MinecraftConnection extends ChannelInboundHandlerAdapter {
+@@ -142,6 +145,7 @@ public class MinecraftConnection extends ChannelInboundHandlerAdapter {
  
    @Override
    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
@@ -18,7 +26,7 @@ index 92679a2c11927ff989c5b963bb9f2b4f90a05846..111edd559a981a2585b7f9a0216b5dc9
      if (activeSessionHandler != null) {
        activeSessionHandler.disconnected();
      }
-@@ -168,7 +170,15 @@ public class MinecraftConnection extends ChannelInboundHandlerAdapter {
+@@ -168,7 +172,15 @@ public class MinecraftConnection extends ChannelInboundHandlerAdapter {
        if (this.isClosed()) {
          return;
        }
@@ -36,10 +44,18 @@ index 92679a2c11927ff989c5b963bb9f2b4f90a05846..111edd559a981a2585b7f9a0216b5dc9
          if (!pkt.handle(activeSessionHandler)) {
            activeSessionHandler.handleGeneric(pkt);
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/BackendPlaySessionHandler.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/BackendPlaySessionHandler.java
-index 37a61d357db2bf601e5efe41c2ec1aa652f03ce2..1a8e2573f40edc41144a1046b35234cad7174fb7 100644
+index 37a61d35..12bda1d8 100644
 --- a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/BackendPlaySessionHandler.java
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/BackendPlaySessionHandler.java
-@@ -187,7 +187,9 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
+@@ -1,5 +1,7 @@
+ /*
+  * Copyright (C) 2018-2023 Velocity Contributors
++ * Copyright (C) 2026 Canopy Contributors
++ * Modified by Canopy contributors in 2026.
+  *
+  * This program is free software: you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -187,7 +189,9 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
  
    @Override
    public boolean handle(BossBarPacket packet) {
@@ -50,7 +66,7 @@ index 37a61d357db2bf601e5efe41c2ec1aa652f03ce2..1a8e2573f40edc41144a1046b35234ca
        if (packet.getAction() == BossBarPacket.ADD) {
          playerSessionHandler.getServerBossBars().add(packet.getUuid());
        } else if (packet.getAction() == BossBarPacket.REMOVE) {
-@@ -301,6 +303,79 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
+@@ -301,6 +305,79 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
      if (bungeecordMessageResponder.process(packet)) {
        return true;
      }
@@ -130,7 +146,7 @@ index 37a61d357db2bf601e5efe41c2ec1aa652f03ce2..1a8e2573f40edc41144a1046b35234ca
  
      // Register and unregister packets are simply forwarded to the client as-is.
      if (PluginMessageUtil.isRegister(packet) || PluginMessageUtil.isUnregister(packet)) {
-@@ -462,6 +537,7 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
+@@ -462,6 +539,7 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
  
    @Override
    public void handleGeneric(MinecraftPacket packet) {
@@ -138,7 +154,7 @@ index 37a61d357db2bf601e5efe41c2ec1aa652f03ce2..1a8e2573f40edc41144a1046b35234ca
      if (packet instanceof PluginMessagePacket pluginMessage) {
        pluginMessage.retain();
      }
-@@ -475,14 +551,57 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
+@@ -475,14 +553,57 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
  
    @Override
    public void handleUnknown(ByteBuf buf) {
@@ -198,7 +214,7 @@ index 37a61d357db2bf601e5efe41c2ec1aa652f03ce2..1a8e2573f40edc41144a1046b35234ca
    @Override
    public void readCompleted() {
      playerConnection.flush();
-@@ -491,6 +610,8 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
+@@ -491,6 +612,8 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
  
    @Override
    public void exception(Throwable throwable) {
@@ -207,7 +223,7 @@ index 37a61d357db2bf601e5efe41c2ec1aa652f03ce2..1a8e2573f40edc41144a1046b35234ca
      exceptionTriggered = true;
      serverConn.getPlayer().handleConnectionException(serverConn.getServer(), throwable,
          !(throwable instanceof ReadTimeoutException));
-@@ -502,6 +623,8 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
+@@ -502,6 +625,8 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
  
    @Override
    public void disconnected() {
@@ -218,12 +234,12 @@ index 37a61d357db2bf601e5efe41c2ec1aa652f03ce2..1a8e2573f40edc41144a1046b35234ca
        if (server.getConfiguration().isFailoverOnUnexpectedServerDisconnect()) {
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/CanopyEntityRewriter.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/CanopyEntityRewriter.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..26aa469887d57c677bb85e8382085855990cc4e5
+index 00000000..3fba0566
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/CanopyEntityRewriter.java
-@@ -0,0 +1,568 @@
+@@ -0,0 +1,567 @@
 +/*
-+ * Copyright (C) 2018-2023 Velocity Contributors
++ * Copyright (C) 2026 Canopy Contributors
 + *
 + * This program is free software: you can redistribute it and/or modify
 + * it under the terms of the GNU General Public License as published by
@@ -232,13 +248,12 @@ index 0000000000000000000000000000000000000000..26aa469887d57c677bb85e8382085855
 + *
 + * This program is distributed in the hope that it will be useful,
 + * but WITHOUT ANY WARRANTY; without even the implied warranty of
-+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 + * GNU General Public License for more details.
 + *
 + * You should have received a copy of the GNU General Public License
-+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
 + */
-+
 +package com.velocitypowered.proxy.connection.backend;
 +
 +import com.velocitypowered.api.network.ProtocolVersion;
@@ -792,10 +807,26 @@ index 0000000000000000000000000000000000000000..26aa469887d57c677bb85e8382085855
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/CanopyServingSessionHandler.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/CanopyServingSessionHandler.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..87fe68fdb98b7509bf4f56baaf87d632b0228688
+index 00000000..13400fe4
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/CanopyServingSessionHandler.java
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,146 @@
++/*
++ * Copyright (C) 2026 Canopy Contributors
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
++ */
 +package com.velocitypowered.proxy.connection.backend;
 +
 +import com.velocitypowered.proxy.connection.MinecraftConnection;
@@ -928,12 +959,12 @@ index 0000000000000000000000000000000000000000..87fe68fdb98b7509bf4f56baaf87d632
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/CanopyShadowSessionHandler.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/CanopyShadowSessionHandler.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..2c569fa38f343e69c400ca21282f9a0719522129
+index 00000000..83331a00
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/CanopyShadowSessionHandler.java
-@@ -0,0 +1,121 @@
+@@ -0,0 +1,120 @@
 +/*
-+ * Copyright (C) 2018-2025 Velocity Contributors
++ * Copyright (C) 2026 Canopy Contributors
 + *
 + * This program is free software: you can redistribute it and/or modify
 + * it under the terms of the GNU General Public License as published by
@@ -942,13 +973,12 @@ index 0000000000000000000000000000000000000000..2c569fa38f343e69c400ca21282f9a07
 + *
 + * This program is distributed in the hope that it will be useful,
 + * but WITHOUT ANY WARRANTY; without even the implied warranty of
-+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 + * GNU General Public License for more details.
 + *
 + * You should have received a copy of the GNU General Public License
-+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
 + */
-+
 +package com.velocitypowered.proxy.connection.backend;
 +
 +import com.velocitypowered.api.event.player.ServerPostConnectEvent;
@@ -1054,10 +1084,18 @@ index 0000000000000000000000000000000000000000..2c569fa38f343e69c400ca21282f9a07
 +  }
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/ConfigSessionHandler.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/ConfigSessionHandler.java
-index 904e848f3a8eeb23df84975281b19055563ca73e..d9a864a97746d3f1148cf61d85acec594444cc3f 100644
+index 904e848f..122f057d 100644
 --- a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/ConfigSessionHandler.java
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/ConfigSessionHandler.java
-@@ -31,6 +31,7 @@ import com.velocitypowered.proxy.VelocityServer;
+@@ -1,5 +1,7 @@
+ /*
+  * Copyright (C) 2019-2023 Velocity Contributors
++ * Copyright (C) 2026 Canopy Contributors
++ * Modified by Canopy contributors in 2026.
+  *
+  * This program is free software: you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -31,6 +33,7 @@ import com.velocitypowered.proxy.VelocityServer;
  import com.velocitypowered.proxy.connection.MinecraftConnection;
  import com.velocitypowered.proxy.connection.MinecraftSessionHandler;
  import com.velocitypowered.proxy.connection.client.ClientConfigSessionHandler;
@@ -1065,7 +1103,7 @@ index 904e848f3a8eeb23df84975281b19055563ca73e..d9a864a97746d3f1148cf61d85acec59
  import com.velocitypowered.proxy.connection.client.ConnectedPlayer;
  import com.velocitypowered.proxy.connection.player.resourcepack.VelocityResourcePackInfo;
  import com.velocitypowered.proxy.connection.player.resourcepack.handler.ResourcePackHandler;
-@@ -54,6 +55,7 @@ import com.velocitypowered.proxy.protocol.packet.config.ClientboundCustomReportD
+@@ -54,6 +57,7 @@ import com.velocitypowered.proxy.protocol.packet.config.ClientboundCustomReportD
  import com.velocitypowered.proxy.protocol.packet.config.ClientboundServerLinksPacket;
  import com.velocitypowered.proxy.protocol.packet.config.CodeOfConductPacket;
  import com.velocitypowered.proxy.protocol.packet.config.FinishedUpdatePacket;
@@ -1073,7 +1111,7 @@ index 904e848f3a8eeb23df84975281b19055563ca73e..d9a864a97746d3f1148cf61d85acec59
  import com.velocitypowered.proxy.protocol.packet.config.RegistrySyncPacket;
  import com.velocitypowered.proxy.protocol.packet.config.StartUpdatePacket;
  import com.velocitypowered.proxy.protocol.packet.config.TagsUpdatePacket;
-@@ -81,6 +83,8 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+@@ -81,6 +85,8 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
    private final CompletableFuture<Impl> resultFuture;
  
    private ResourcePackInfo resourcePackToApply;
@@ -1082,7 +1120,7 @@ index 904e848f3a8eeb23df84975281b19055563ca73e..d9a864a97746d3f1148cf61d85acec59
  
    private State state;
  
-@@ -118,32 +122,70 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+@@ -118,32 +124,70 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
      return false;
    }
  
@@ -1153,7 +1191,7 @@ index 904e848f3a8eeb23df84975281b19055563ca73e..d9a864a97746d3f1148cf61d85acec59
      serverConn.getPendingPings().put(packet.getRandomId(), System.nanoTime());
      serverConn.getPlayer().getConnection().write(packet);
      return true;
-@@ -151,7 +193,16 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+@@ -151,7 +195,16 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
  
    @Override
    public boolean handle(final ResourcePackRequestPacket packet) {
@@ -1170,7 +1208,7 @@ index 904e848f3a8eeb23df84975281b19055563ca73e..d9a864a97746d3f1148cf61d85acec59
  
      final ResourcePackInfo resourcePackInfo = packet.toServerPromptedPack();
      final ServerResourcePackSendEvent event =
-@@ -206,6 +257,7 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+@@ -206,6 +259,7 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
  
    @Override
    public boolean handle(RemoveResourcePackPacket packet) {
@@ -1178,7 +1216,7 @@ index 904e848f3a8eeb23df84975281b19055563ca73e..d9a864a97746d3f1148cf61d85acec59
      final MinecraftConnection playerConnection = this.serverConn.getPlayer().getConnection();
  
      final ServerResourcePackRemoveEvent event = new ServerResourcePackRemoveEvent(
-@@ -235,6 +287,40 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+@@ -235,6 +289,40 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
    public boolean handle(FinishedUpdatePacket packet) {
      final MinecraftConnection smc = serverConn.ensureConnected();
      final ConnectedPlayer player = serverConn.getPlayer();
@@ -1219,7 +1257,7 @@ index 904e848f3a8eeb23df84975281b19055563ca73e..d9a864a97746d3f1148cf61d85acec59
      final ClientConfigSessionHandler configHandler = (ClientConfigSessionHandler) player.getConnection().getActiveSessionHandler();
  
      smc.getChannel().pipeline().get(MinecraftVarintFrameDecoder.class).setState(StateRegistry.PLAY);
-@@ -306,6 +392,10 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+@@ -306,6 +394,10 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
  
    @Override
    public boolean handle(RegistrySyncPacket packet) {
@@ -1230,7 +1268,7 @@ index 904e848f3a8eeb23df84975281b19055563ca73e..d9a864a97746d3f1148cf61d85acec59
      serverConn.getPlayer().getConnection().write(packet.retain());
      return true;
    }
-@@ -370,6 +460,9 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+@@ -370,6 +462,9 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
  
    @Override
    public boolean handle(CodeOfConductPacket packet) {
@@ -1240,7 +1278,7 @@ index 904e848f3a8eeb23df84975281b19055563ca73e..d9a864a97746d3f1148cf61d85acec59
      this.serverConn.getPlayer().getConnection().write(packet.retain());
      return true;
    }
-@@ -382,6 +475,8 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
+@@ -382,6 +477,8 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
  
    @Override
    public void handleGeneric(MinecraftPacket packet) {
@@ -1250,10 +1288,18 @@ index 904e848f3a8eeb23df84975281b19055563ca73e..d9a864a97746d3f1148cf61d85acec59
    }
  
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/LoginSessionHandler.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/LoginSessionHandler.java
-index 14884af4670fe30b00ee580ea3d65fc7f6056068..17a34c92611fe9c892ae58e30b8c5bd3d1ab39ed 100644
+index 14884af4..8fac918d 100644
 --- a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/LoginSessionHandler.java
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/LoginSessionHandler.java
-@@ -96,7 +96,11 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
+@@ -1,5 +1,7 @@
+ /*
+  * Copyright (C) 2018-2023 Velocity Contributors
++ * Copyright (C) 2026 Canopy Contributors
++ * Modified by Canopy contributors in 2026.
+  *
+  * This program is free software: you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -96,7 +98,11 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
            configuration.getForwardingSecret(),
            serverConn.getPlayerRemoteAddressAsString(),
            player.getProtocolVersion(),
@@ -1266,24 +1312,13 @@ index 14884af4670fe30b00ee580ea3d65fc7f6056068..17a34c92611fe9c892ae58e30b8c5bd3
            player.getIdentifiedKey(),
            requestedForwardingVersion);
  
-@@ -149,6 +153,36 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
+@@ -149,6 +155,25 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
        return true;
      }
  
 +    ConnectedPlayer switchingPlayer = serverConn.getPlayer();
-+    var previous = switchingPlayer.getConnectedServer();
 +    try {
-+      serverConn.setCanopyMode(
-+          com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.select(
-+              com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.requested(switchingPlayer.getUniqueId()),
-+              com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.fallback(),
-+              previous == null,
-+              previous != null && com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.sameConfiguration(
-+                  com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.configurationFingerprint(
-+                      previous.getServerInfo().getName()),
-+                  com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.configurationFingerprint(
-+                      serverConn.getServerInfo().getName())),
-+              new CanopyEntityRewriter().supports(switchingPlayer.getProtocolVersion())));
++      serverConn.setCanopyMode(selectCanopyMode(switchingPlayer, serverConn));
 +      com.velocitypowered.proxy.connection.client.CanopyLifecycleHooks.audit(switchingPlayer.getUniqueId(), "protocol.mode_selected",
 +          "target", serverConn.getServerInfo().getName(), "mode", serverConn.getCanopyMode().name(),
 +          "protocol", switchingPlayer.getProtocolVersion().getProtocol());
@@ -1303,7 +1338,7 @@ index 14884af4670fe30b00ee580ea3d65fc7f6056068..17a34c92611fe9c892ae58e30b8c5bd3
      // The player has been logged on to the backend server, but we're not done yet. There could be
      // other problems that could arise before we get a JoinGame packet from the server.
  
-@@ -164,8 +198,14 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
+@@ -164,8 +189,14 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
          smc.write(player.getClientSettingsPacket());
        }
        if (player.getConnection().getActiveSessionHandler() instanceof ClientPlaySessionHandler clientPlaySessionHandler) {
@@ -1320,11 +1355,46 @@ index 14884af4670fe30b00ee580ea3d65fc7f6056068..17a34c92611fe9c892ae58e30b8c5bd3
        } else {
          // Initial login - the player is already in configuration state.
          server.getEventManager().fireAndForget(new PlayerEnteredConfigurationEvent(player, serverConn));
+@@ -175,6 +206,26 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
+     return true;
+   }
+ 
++  static com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.Mode selectCanopyMode(
++      ConnectedPlayer player, VelocityServerConnection destination) {
++    var connectedSource = player.getConnectedServer();
++    var requestedSource = destination.getPreviousServer().orElse(null);
++    String sourceName = requestedSource != null ? requestedSource.getServerInfo().getName()
++        : connectedSource != null ? connectedSource.getServerInfo().getName() : null;
++    boolean initialLogin = sourceName == null;
++    boolean redundantConfiguration = sourceName != null
++        && com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.sameConfiguration(
++            com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.configurationFingerprint(sourceName),
++            com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.configurationFingerprint(
++                destination.getServerInfo().getName()));
++    return com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.select(
++        com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.requested(player.getUniqueId()),
++        com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.fallback(),
++        initialLogin,
++        redundantConfiguration,
++        new CanopyEntityRewriter().supports(player.getProtocolVersion()));
++  }
++
+   @Override
+   public boolean handle(ClientboundStoreCookiePacket packet) {
+     throw new IllegalStateException("Can only store cookie in CONFIGURATION or PLAY protocol");
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/TransitionSessionHandler.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/TransitionSessionHandler.java
-index da8513c00e848b86f3c5c75df76e1350befab1cc..8eaeb70cb86f7abc949b164418556f2da3e1e9dc 100644
+index da8513c0..f109db6d 100644
 --- a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/TransitionSessionHandler.java
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/TransitionSessionHandler.java
-@@ -90,6 +90,33 @@ public class TransitionSessionHandler implements MinecraftSessionHandler {
+@@ -1,5 +1,7 @@
+ /*
+  * Copyright (C) 2019-2023 Velocity Contributors
++ * Copyright (C) 2026 Canopy Contributors
++ * Modified by Canopy contributors in 2026.
+  *
+  * This program is free software: you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -90,6 +92,33 @@ public class TransitionSessionHandler implements MinecraftSessionHandler {
    @Override
    public boolean handle(JoinGamePacket packet) {
      final MinecraftConnection smc = serverConn.ensureConnected();
@@ -1358,7 +1428,7 @@ index da8513c00e848b86f3c5c75df76e1350befab1cc..8eaeb70cb86f7abc949b164418556f2d
      final RegisteredServer previousServer = serverConn.getPreviousServer().orElse(null);
      final ConnectedPlayer player = serverConn.getPlayer();
      final VelocityServerConnection existingConnection = player.getConnectedServer();
-@@ -136,7 +163,7 @@ public class TransitionSessionHandler implements MinecraftSessionHandler {
+@@ -136,7 +165,7 @@ public class TransitionSessionHandler implements MinecraftSessionHandler {
            // Set the new play session handler for the server. We will have nothing more to do
            // with this connection once this task finishes up.
            smc.setActiveSessionHandler(StateRegistry.PLAY,
@@ -1368,10 +1438,18 @@ index da8513c00e848b86f3c5c75df76e1350befab1cc..8eaeb70cb86f7abc949b164418556f2d
            // Now set the connected server.
            serverConn.getPlayer().setConnectedServer(serverConn);
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/VelocityServerConnection.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/VelocityServerConnection.java
-index 7cdaffa12f6b86903484243ecbafb8c913dfc0b3..4210e3adbfe7039be6ec3cea279c91a638eff1d5 100644
+index 7cdaffa1..7c165460 100644
 --- a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/VelocityServerConnection.java
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/VelocityServerConnection.java
-@@ -70,6 +70,19 @@ public class VelocityServerConnection implements MinecraftConnectionAssociation,
+@@ -1,5 +1,7 @@
+ /*
+  * Copyright (C) 2018-2023 Velocity Contributors
++ * Copyright (C) 2026 Canopy Contributors
++ * Modified by Canopy contributors in 2026.
+  *
+  * This program is free software: you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -70,6 +72,19 @@ public class VelocityServerConnection implements MinecraftConnectionAssociation,
    private boolean hasCompletedJoin = false;
    private boolean clientLoaded = false; // 1.21.4+
    private boolean gracefulDisconnect = false;
@@ -1391,7 +1469,7 @@ index 7cdaffa12f6b86903484243ecbafb8c913dfc0b3..4210e3adbfe7039be6ec3cea279c91a6
    private BackendConnectionPhase connectionPhase = BackendConnectionPhases.UNKNOWN;
    private final Map<Long, Long> pendingPings = new HashMap<>();
    private @MonotonicNonNull Integer entityId;
-@@ -380,6 +393,14 @@ public class VelocityServerConnection implements MinecraftConnectionAssociation,
+@@ -380,6 +395,14 @@ public class VelocityServerConnection implements MinecraftConnectionAssociation,
     *
     * @return Whether the join has been completed.
     */
@@ -1408,10 +1486,26 @@ index 7cdaffa12f6b86903484243ecbafb8c913dfc0b3..4210e3adbfe7039be6ec3cea279c91a6
    }
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyArrivalView.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyArrivalView.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..7aae2bcd57cc4604c22f8d6363e33339e95ba2b4
+index 00000000..1219c1f5
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyArrivalView.java
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,88 @@
++/*
++ * Copyright (C) 2026 Canopy Contributors
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
++ */
 +package com.velocitypowered.proxy.connection.client;
 +
 +import com.velocitypowered.proxy.protocol.ProtocolUtils;
@@ -1486,12 +1580,12 @@ index 0000000000000000000000000000000000000000..7aae2bcd57cc4604c22f8d6363e33339
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyChunkView.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyChunkView.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..30716be9c7b6bd4dd5aaf703a818f80b9975db20
+index 00000000..14f01c9e
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyChunkView.java
-@@ -0,0 +1,590 @@
+@@ -0,0 +1,589 @@
 +/*
-+ * Copyright (C) 2018-2025 Velocity Contributors
++ * Copyright (C) 2026 Canopy Contributors
 + *
 + * This program is free software: you can redistribute it and/or modify
 + * it under the terms of the GNU General Public License as published by
@@ -1500,13 +1594,12 @@ index 0000000000000000000000000000000000000000..30716be9c7b6bd4dd5aaf703a818f80b
 + *
 + * This program is distributed in the hope that it will be useful,
 + * but WITHOUT ANY WARRANTY; without even the implied warranty of
-+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 + * GNU General Public License for more details.
 + *
 + * You should have received a copy of the GNU General Public License
-+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
 + */
-+
 +package com.velocitypowered.proxy.connection.client;
 +
 +import com.velocitypowered.proxy.protocol.ProtocolUtils;
@@ -2082,10 +2175,26 @@ index 0000000000000000000000000000000000000000..30716be9c7b6bd4dd5aaf703a818f80b
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyConfiguration.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyConfiguration.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..a6d66c7101fb58e14605eb4d6ca4030add2b2d3f
+index 00000000..975d948f
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyConfiguration.java
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,133 @@
++/*
++ * Copyright (C) 2026 Canopy Contributors
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
++ */
 +package com.velocitypowered.proxy.connection.client;
 +
 +import com.velocitypowered.proxy.protocol.MinecraftPacket;
@@ -2205,19 +2314,26 @@ index 0000000000000000000000000000000000000000..a6d66c7101fb58e14605eb4d6ca4030a
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyGameplayFreeze.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyGameplayFreeze.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..bac2ccedae3321c84ba8e5a3716c40f97b0b9a82
+index 00000000..fd448005
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyGameplayFreeze.java
-@@ -0,0 +1,671 @@
+@@ -0,0 +1,678 @@
 +/*
-+ * Copyright (C) 2026 Velocity Contributors
++ * Copyright (C) 2026 Canopy Contributors
 + *
 + * This program is free software: you can redistribute it and/or modify
 + * it under the terms of the GNU General Public License as published by
 + * the Free Software Foundation, either version 3 of the License, or
 + * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
 + */
-+
 +package com.velocitypowered.proxy.connection.client;
 +
 +import com.velocitypowered.api.proxy.Player;
@@ -2882,12 +2998,12 @@ index 0000000000000000000000000000000000000000..bac2ccedae3321c84ba8e5a3716c40f9
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyHandover.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyHandover.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..df4039e90d50020f351c42b796d3e0f8ada44c6e
+index 00000000..cefb7f1e
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyHandover.java
-@@ -0,0 +1,554 @@
+@@ -0,0 +1,553 @@
 +/*
-+ * Copyright (C) 2018-2025 Velocity Contributors
++ * Copyright (C) 2026 Canopy Contributors
 + *
 + * This program is free software: you can redistribute it and/or modify
 + * it under the terms of the GNU General Public License as published by
@@ -2896,13 +3012,12 @@ index 0000000000000000000000000000000000000000..df4039e90d50020f351c42b796d3e0f8
 + *
 + * This program is distributed in the hope that it will be useful,
 + * but WITHOUT ANY WARRANTY; without even the implied warranty of
-+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 + * GNU General Public License for more details.
 + *
 + * You should have received a copy of the GNU General Public License
-+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
 + */
-+
 +package com.velocitypowered.proxy.connection.client;
 +
 +import com.velocitypowered.proxy.connection.MinecraftConnection;
@@ -3442,10 +3557,26 @@ index 0000000000000000000000000000000000000000..df4039e90d50020f351c42b796d3e0f8
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyKnownPacks.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyKnownPacks.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..883d5ce477f37417c590f99c2b32227bfee3bfe9
+index 00000000..0a70cf92
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyKnownPacks.java
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,40 @@
++/*
++ * Copyright (C) 2026 Canopy Contributors
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
++ */
 +package com.velocitypowered.proxy.connection.client;
 +
 +import com.velocitypowered.api.network.ProtocolVersion;
@@ -3472,10 +3603,26 @@ index 0000000000000000000000000000000000000000..883d5ce477f37417c590f99c2b32227b
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyLifecycleHooks.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyLifecycleHooks.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..ff622204e0a250ee4518937b65267beab8e23a32
+index 00000000..a05eb21e
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyLifecycleHooks.java
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,76 @@
++/*
++ * Copyright (C) 2026 Canopy Contributors
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
++ */
 +package com.velocitypowered.proxy.connection.client;
 +
 +import java.util.UUID;
@@ -3538,10 +3685,26 @@ index 0000000000000000000000000000000000000000..ff622204e0a250ee4518937b65267bea
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyProtocolProfile.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyProtocolProfile.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..eb1604f87d868afd0f9e9c05d46e8865ef8b32dd
+index 00000000..76e3d1b5
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyProtocolProfile.java
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,83 @@
++/*
++ * Copyright (C) 2026 Canopy Contributors
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
++ */
 +package com.velocitypowered.proxy.connection.client;
 +
 +import java.io.BufferedReader;
@@ -3611,10 +3774,26 @@ index 0000000000000000000000000000000000000000..eb1604f87d868afd0f9e9c05d46e8865
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyServing.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyServing.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..6cb162405d1594294b3610b47a53cddeaaa6d501
+index 00000000..fa4c15f7
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyServing.java
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,136 @@
++/*
++ * Copyright (C) 2026 Canopy Contributors
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
++ */
 +package com.velocitypowered.proxy.connection.client;
 +
 +import java.util.ArrayDeque;
@@ -3737,12 +3916,12 @@ index 0000000000000000000000000000000000000000..6cb162405d1594294b3610b47a53cdde
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyShadow.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyShadow.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..067eab3bf2bd635a071365c9b0dfeca7109f22ee
+index 00000000..f6796c8c
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyShadow.java
-@@ -0,0 +1,230 @@
+@@ -0,0 +1,229 @@
 +/*
-+ * Copyright (C) 2018-2025 Velocity Contributors
++ * Copyright (C) 2026 Canopy Contributors
 + *
 + * This program is free software: you can redistribute it and/or modify
 + * it under the terms of the GNU General Public License as published by
@@ -3751,13 +3930,12 @@ index 0000000000000000000000000000000000000000..067eab3bf2bd635a071365c9b0dfeca7
 + *
 + * This program is distributed in the hope that it will be useful,
 + * but WITHOUT ANY WARRANTY; without even the implied warranty of
-+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 + * GNU General Public License for more details.
 + *
 + * You should have received a copy of the GNU General Public License
-+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
 + */
-+
 +package com.velocitypowered.proxy.connection.client;
 +
 +import com.velocitypowered.proxy.VelocityServer;
@@ -3973,19 +4151,26 @@ index 0000000000000000000000000000000000000000..067eab3bf2bd635a071365c9b0dfeca7
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyShadowPromotionGate.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyShadowPromotionGate.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..d52a5312dc427f985d85e2809a66da420cce0a0e
+index 00000000..c34a56c0
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyShadowPromotionGate.java
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,93 @@
 +/*
-+ * Copyright (C) 2018-2025 Velocity Contributors
++ * Copyright (C) 2026 Canopy Contributors
 + *
 + * This program is free software: you can redistribute it and/or modify
 + * it under the terms of the GNU General Public License as published by
 + * the Free Software Foundation, either version 3 of the License, or
 + * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
 + */
-+
 +package com.velocitypowered.proxy.connection.client;
 +
 +import java.util.Locale;
@@ -4065,10 +4250,26 @@ index 0000000000000000000000000000000000000000..d52a5312dc427f985d85e2809a66da42
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopySwitchPolicy.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopySwitchPolicy.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..252c07e540e6ec46cd89895f2c42ad2c39c8a960
+index 00000000..70e743b8
 --- /dev/null
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopySwitchPolicy.java
-@@ -0,0 +1,150 @@
+@@ -0,0 +1,166 @@
++/*
++ * Copyright (C) 2026 Canopy Contributors
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
++ */
 +package com.velocitypowered.proxy.connection.client;
 +
 +import java.util.Locale;
@@ -4220,10 +4421,18 @@ index 0000000000000000000000000000000000000000..252c07e540e6ec46cd89895f2c42ad2c
 +  }
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ClientConfigSessionHandler.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ClientConfigSessionHandler.java
-index b86041035bb282c880fc388d47e2a5aee6dc128d..633e147ddd3edb02d0313a67b82a10fdecaef2bb 100644
+index b8604103..6ed1c01c 100644
 --- a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ClientConfigSessionHandler.java
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ClientConfigSessionHandler.java
-@@ -175,6 +175,7 @@ public class ClientConfigSessionHandler implements MinecraftSessionHandler {
+@@ -1,5 +1,7 @@
+ /*
+  * Copyright (C) 2018-2023 Velocity Contributors
++ * Copyright (C) 2026 Canopy Contributors
++ * Modified by Canopy contributors in 2026.
+  *
+  * This program is free software: you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -175,6 +177,7 @@ public class ClientConfigSessionHandler implements MinecraftSessionHandler {
  
    @Override
    public boolean handle(KnownPacksPacket packet) {
@@ -4232,10 +4441,18 @@ index b86041035bb282c880fc388d47e2a5aee6dc128d..633e147ddd3edb02d0313a67b82a10fd
        VelocityServerConnection targetServer =
            player.getConnectionInFlightOrConnectedServer();
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ClientPlaySessionHandler.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ClientPlaySessionHandler.java
-index beecf3ac32e9615acef9ae155dec40a186e00c8d..4c5f6adb24400a5fa0a2ba9d7b4f053ecb7bca6c 100644
+index beecf3ac..30a53f45 100644
 --- a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ClientPlaySessionHandler.java
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ClientPlaySessionHandler.java
-@@ -43,6 +43,7 @@ import com.velocitypowered.proxy.connection.player.resourcepack.ResourcePackResp
+@@ -1,5 +1,7 @@
+ /*
+  * Copyright (C) 2018-2023 Velocity Contributors
++ * Copyright (C) 2026 Canopy Contributors
++ * Modified by Canopy contributors in 2026.
+  *
+  * This program is free software: you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -43,6 +45,7 @@ import com.velocitypowered.proxy.connection.player.resourcepack.ResourcePackResp
  import com.velocitypowered.proxy.protocol.MinecraftPacket;
  import com.velocitypowered.proxy.protocol.StateRegistry;
  import com.velocitypowered.proxy.protocol.netty.MinecraftDecoder;
@@ -4243,7 +4460,7 @@ index beecf3ac32e9615acef9ae155dec40a186e00c8d..4c5f6adb24400a5fa0a2ba9d7b4f053e
  import com.velocitypowered.proxy.protocol.packet.BossBarPacket;
  import com.velocitypowered.proxy.protocol.packet.ClientSettingsPacket;
  import com.velocitypowered.proxy.protocol.packet.JoinGamePacket;
-@@ -133,6 +134,11 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+@@ -133,6 +136,11 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
  
    private int failedTabCompleteAttempts;
  
@@ -4255,7 +4472,7 @@ index beecf3ac32e9615acef9ae155dec40a186e00c8d..4c5f6adb24400a5fa0a2ba9d7b4f053e
    /**
     * Constructs a client play session handler.
     *
-@@ -142,6 +148,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+@@ -142,6 +150,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
    public ClientPlaySessionHandler(VelocityServer server, ConnectedPlayer player) {
      this.player = player;
      this.server = server;
@@ -4263,7 +4480,7 @@ index beecf3ac32e9615acef9ae155dec40a186e00c8d..4c5f6adb24400a5fa0a2ba9d7b4f053e
  
      if (this.player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_19_3)) {
        this.chatHandler = new SessionChatHandler(this.player, this.server);
-@@ -190,6 +197,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+@@ -190,6 +199,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
  
    @Override
    public void deactivated() {
@@ -4271,7 +4488,7 @@ index beecf3ac32e9615acef9ae155dec40a186e00c8d..4c5f6adb24400a5fa0a2ba9d7b4f053e
      player.discardChatQueue();
      PluginMessagePacket message;
      while ((message = loginPluginMessages.poll()) != null) {
-@@ -522,6 +530,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+@@ -522,6 +532,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
  
    @Override
    public void handleGeneric(MinecraftPacket packet) {
@@ -4279,7 +4496,7 @@ index beecf3ac32e9615acef9ae155dec40a186e00c8d..4c5f6adb24400a5fa0a2ba9d7b4f053e
      VelocityServerConnection serverConnection = player.getConnectedServer();
      if (serverConnection == null) {
        // No server connection yet, probably transitioning.
-@@ -543,6 +552,12 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+@@ -543,6 +554,12 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
  
    @Override
    public void handleUnknown(ByteBuf buf) {
@@ -4292,7 +4509,7 @@ index beecf3ac32e9615acef9ae155dec40a186e00c8d..4c5f6adb24400a5fa0a2ba9d7b4f053e
      VelocityServerConnection serverConnection = player.getConnectedServer();
      if (serverConnection == null) {
        // No server connection yet, probably transitioning.
-@@ -555,12 +570,24 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+@@ -555,12 +572,24 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
          && serverConnection.getPhase().consideredComplete()
          && smc.getState() == StateRegistry.PLAY;
      if (stateAllowsForward) {
@@ -4318,7 +4535,7 @@ index beecf3ac32e9615acef9ae155dec40a186e00c8d..4c5f6adb24400a5fa0a2ba9d7b4f053e
      player.teardown();
    }
  
-@@ -596,7 +623,9 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+@@ -596,7 +625,9 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
      if (serverConn != null) {
        MinecraftConnection smc = serverConn.getConnection();
        if (smc != null) {
@@ -4329,7 +4546,7 @@ index beecf3ac32e9615acef9ae155dec40a186e00c8d..4c5f6adb24400a5fa0a2ba9d7b4f053e
        }
      }
    }
-@@ -617,17 +646,21 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+@@ -617,17 +648,21 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
        // Send keep alive to try to avoid timeouts
        player.sendKeepAlive();
  
@@ -4360,7 +4577,7 @@ index beecf3ac32e9615acef9ae155dec40a186e00c8d..4c5f6adb24400a5fa0a2ba9d7b4f053e
      player.switchToConfigState();
  
      return configSwitchFuture;
-@@ -641,7 +674,14 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+@@ -641,7 +676,14 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
     * @param destination the new server we are connecting to
     */
    public void handleBackendJoinGame(JoinGamePacket joinGame, VelocityServerConnection destination) {
@@ -4375,7 +4592,7 @@ index beecf3ac32e9615acef9ae155dec40a186e00c8d..4c5f6adb24400a5fa0a2ba9d7b4f053e
  
      if (!spawned) {
        // The player wasn't spawned in yet, so we don't need to do anything special. Just send
-@@ -650,6 +690,12 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+@@ -650,6 +692,12 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
        player.getConnection().delayedWrite(joinGame);
        // Required for Legacy Forge
        player.getPhase().onFirstJoin(player);
@@ -4388,7 +4605,7 @@ index beecf3ac32e9615acef9ae155dec40a186e00c8d..4c5f6adb24400a5fa0a2ba9d7b4f053e
      } else {
        // Clear tab list to avoid duplicate entries
        player.getTabList().clearAll();
-@@ -658,8 +704,30 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+@@ -658,8 +706,30 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
        // entity IDs and send new dimension information.
        if (player.getConnection().getType() == ConnectionTypes.LEGACY_FORGE) {
          this.doSafeClientServerSwitch(joinGame);
@@ -4419,7 +4636,7 @@ index beecf3ac32e9615acef9ae155dec40a186e00c8d..4c5f6adb24400a5fa0a2ba9d7b4f053e
        }
      }
  
-@@ -732,6 +800,92 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+@@ -732,6 +802,92 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
      player.getConnection().delayedWrite(respawn);
    }
  
@@ -4513,10 +4730,18 @@ index beecf3ac32e9615acef9ae155dec40a186e00c8d..4c5f6adb24400a5fa0a2ba9d7b4f053e
      // Some clients do not behave well with the "fast" respawn sequence. In this case we will use
      // a "safe" respawn sequence that involves sending three packets to the client. They have the
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ConnectedPlayer.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ConnectedPlayer.java
-index f5898aceea5260968ef117a638cbdc3426813581..ae5c7b9f68516d8ed065615999aa61345a131634 100644
+index f5898ace..61f0e217 100644
 --- a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ConnectedPlayer.java
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ConnectedPlayer.java
-@@ -1424,9 +1424,38 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player,
+@@ -1,5 +1,7 @@
+ /*
+  * Copyright (C) 2018-2023 Velocity Contributors
++ * Copyright (C) 2026 Canopy Contributors
++ * Modified by Canopy contributors in 2026.
+  *
+  * This program is free software: you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -1424,9 +1426,38 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player,
      return bossBarManager;
    }
  
@@ -4555,7 +4780,7 @@ index f5898aceea5260968ef117a638cbdc3426813581..ae5c7b9f68516d8ed065615999aa6134
      private final @Nullable VelocityRegisteredServer previousServer;
  
      ConnectionRequestBuilderImpl(RegisteredServer toConnect,
-@@ -1447,7 +1476,7 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player,
+@@ -1447,7 +1478,7 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player,
            && !connectedServer.hasCompletedJoin())) {
          return Optional.of(ConnectionRequestBuilder.Status.CONNECTION_IN_PROGRESS);
        }
@@ -4564,7 +4789,7 @@ index f5898aceea5260968ef117a638cbdc3426813581..ae5c7b9f68516d8ed065615999aa6134
            && connectedServer.getServer().getServerInfo().equals(server.getServerInfo())) {
          return Optional.of(ALREADY_CONNECTED);
        }
-@@ -1483,6 +1512,10 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player,
+@@ -1483,6 +1514,10 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player,
            VelocityServerConnection con =
                new VelocityServerConnection(vrs, previousServer, ConnectedPlayer.this, server);
            connectionInFlight = con;
@@ -4575,11 +4800,66 @@ index f5898aceea5260968ef117a638cbdc3426813581..ae5c7b9f68516d8ed065615999aa6134
  
            return con.connect().whenCompleteAsync((result, exception) -> {
              if (result != null && !result.isSuccessful() && !result.isSafe()) {
+diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/util/ServerListPingHandler.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/util/ServerListPingHandler.java
+index 97582ca2..28f632e9 100644
+--- a/proxy/src/main/java/com/velocitypowered/proxy/connection/util/ServerListPingHandler.java
++++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/util/ServerListPingHandler.java
+@@ -1,5 +1,7 @@
+ /*
+  * Copyright (C) 2018-2023 Velocity Contributors
++ * Copyright (C) 2026 Canopy Contributors
++ * Modified by Canopy contributors in 2026.
+  *
+  * This program is free software: you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -51,9 +53,6 @@ public class ServerListPingHandler {
+   }
+ 
+   private ServerPing constructLocalPing(ProtocolVersion version) {
+-    if (version == ProtocolVersion.UNKNOWN) {
+-      version = ProtocolVersion.MAXIMUM_VERSION;
+-    }
+     VelocityConfiguration configuration = server.getConfiguration();
+     List<ServerPing.SamplePlayer> samplePlayers;
+     if (configuration.getSamplePlayersInPing()) {
+@@ -72,8 +71,7 @@ public class ServerListPingHandler {
+       samplePlayers = ImmutableList.of();
+     }
+     return new ServerPing(
+-        new ServerPing.Version(version.getProtocol(),
+-            "Velocity " + ProtocolVersion.SUPPORTED_VERSION_STRING),
++        localVersion(version),
+         new ServerPing.Players(server.getPlayerCount(), configuration.getShowMaxPlayers(),
+             samplePlayers),
+         configuration.getMotd(),
+@@ -82,6 +80,14 @@ public class ServerListPingHandler {
+     );
+   }
+ 
++  static ServerPing.Version localVersion(ProtocolVersion version) {
++    if (version == ProtocolVersion.UNKNOWN) {
++      version = ProtocolVersion.MAXIMUM_VERSION;
++    }
++    return new ServerPing.Version(version.getProtocol(),
++        "Canopy " + ProtocolVersion.SUPPORTED_VERSION_STRING);
++  }
++
+   private CompletableFuture<ServerPing> attemptPingPassthrough(VelocityInboundConnection connection,
+       PingPassthroughMode mode, List<String> servers, ProtocolVersion responseProtocolVersion, String virtualHostStr) {
+     ServerPing fallback = constructLocalPing(connection.getProtocolVersion());
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/protocol/util/PluginMessageUtil.java b/proxy/src/main/java/com/velocitypowered/proxy/protocol/util/PluginMessageUtil.java
-index 298e74d4f202fa01d93317ae3d69e8bf3e173041..b5a4ede60439063f3e095dde4e8bb0e9abab6d4a 100644
+index 298e74d4..4df72086 100644
 --- a/proxy/src/main/java/com/velocitypowered/proxy/protocol/util/PluginMessageUtil.java
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/protocol/util/PluginMessageUtil.java
-@@ -184,7 +184,9 @@ public final class PluginMessageUtil {
+@@ -1,5 +1,7 @@
+ /*
+  * Copyright (C) 2018-2023 Velocity Contributors
++ * Copyright (C) 2026 Canopy Contributors
++ * Modified by Canopy contributors in 2026.
+  *
+  * This program is free software: you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -184,7 +186,9 @@ public final class PluginMessageUtil {
      checkArgument(isMcBrand(message), "message is not a brand plugin message");
  
      String currentBrand = readBrandMessage(message.content());
@@ -4592,7 +4872,7 @@ index 298e74d4f202fa01d93317ae3d69e8bf3e173041..b5a4ede60439063f3e095dde4e8bb0e9
      if (protocolVersion.noLessThan(ProtocolVersion.MINECRAFT_1_8)) {
 diff --git a/proxy/src/main/resources/canopy/protocol-profiles.tsv b/proxy/src/main/resources/canopy/protocol-profiles.tsv
 new file mode 100644
-index 0000000000000000000000000000000000000000..d0134baddd1ffda9b67ddea03f6ec532d3ff2224
+index 00000000..d0134bad
 --- /dev/null
 +++ b/proxy/src/main/resources/canopy/protocol-profiles.tsv
 @@ -0,0 +1,467 @@
@@ -5065,12 +5345,12 @@ index 0000000000000000000000000000000000000000..d0134baddd1ffda9b67ddea03f6ec532
 +777 SB 21 22
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/backend/BackendPlaySessionHandlerBedrockHandoverTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/backend/BackendPlaySessionHandlerBedrockHandoverTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..1653fc3113ff177b3e938fe6a02a6596d9ad7e9c
+index 00000000..a0d7f2d6
 --- /dev/null
 +++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/backend/BackendPlaySessionHandlerBedrockHandoverTest.java
-@@ -0,0 +1,232 @@
+@@ -0,0 +1,231 @@
 +/*
-+ * Copyright (C) 2018-2025 Velocity Contributors
++ * Copyright (C) 2026 Canopy Contributors
 + *
 + * This program is free software: you can redistribute it and/or modify
 + * it under the terms of the GNU General Public License as published by
@@ -5079,13 +5359,12 @@ index 0000000000000000000000000000000000000000..1653fc3113ff177b3e938fe6a02a6596
 + *
 + * This program is distributed in the hope that it will be useful,
 + * but WITHOUT ANY WARRANTY; without even the implied warranty of
-+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 + * GNU General Public License for more details.
 + *
 + * You should have received a copy of the GNU General Public License
-+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
 + */
-+
 +package com.velocitypowered.proxy.connection.backend;
 +
 +import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -5301,12 +5580,146 @@ index 0000000000000000000000000000000000000000..1653fc3113ff177b3e938fe6a02a6596
 +    }
 +  }
 +}
+diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/backend/LoginSessionHandlerCanopySelectionTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/backend/LoginSessionHandlerCanopySelectionTest.java
+new file mode 100644
+index 00000000..8bc9346a
+--- /dev/null
++++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/backend/LoginSessionHandlerCanopySelectionTest.java
+@@ -0,0 +1,112 @@
++/*
++ * Copyright (C) 2026 Canopy Contributors
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ */
++
++package com.velocitypowered.proxy.connection.backend;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++
++import com.velocitypowered.api.network.ProtocolVersion;
++import com.velocitypowered.api.proxy.server.RegisteredServer;
++import com.velocitypowered.api.proxy.server.ServerInfo;
++import com.velocitypowered.proxy.connection.client.CanopySwitchPolicy;
++import com.velocitypowered.proxy.connection.client.ConnectedPlayer;
++import java.net.InetSocketAddress;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Optional;
++import java.util.UUID;
++import org.junit.jupiter.api.Test;
++
++class LoginSessionHandlerCanopySelectionTest {
++  @Test
++  void failoverUsesAttemptPreviousServerAfterCurrentConnectionWasCleared() {
++    UUID playerId = UUID.randomUUID();
++    try (PropertyRestore ignored = seamlessWithMatchingFingerprints(playerId)) {
++      ConnectedPlayer player = mock(ConnectedPlayer.class);
++      when(player.getUniqueId()).thenReturn(playerId);
++      when(player.getProtocolVersion()).thenReturn(ProtocolVersion.getProtocolVersion(774));
++      when(player.getConnectedServer()).thenReturn(null);
++
++      RegisteredServer previous = mock(RegisteredServer.class);
++      when(previous.getServerInfo()).thenReturn(serverInfo("source"));
++      VelocityServerConnection destination = mock(VelocityServerConnection.class);
++      when(destination.getPreviousServer()).thenReturn(Optional.of(previous));
++      when(destination.getServerInfo()).thenReturn(serverInfo("destination"));
++
++      assertEquals(CanopySwitchPolicy.Mode.SEAMLESS,
++          LoginSessionHandler.selectCanopyMode(player, destination));
++    }
++  }
++
++  @Test
++  void firstLoginRemainsNormalWithoutPreviousServerMetadata() {
++    UUID playerId = UUID.randomUUID();
++    try (PropertyRestore ignored = seamlessWithMatchingFingerprints(playerId)) {
++      ConnectedPlayer player = mock(ConnectedPlayer.class);
++      when(player.getUniqueId()).thenReturn(playerId);
++      when(player.getProtocolVersion()).thenReturn(ProtocolVersion.getProtocolVersion(774));
++
++      VelocityServerConnection destination = mock(VelocityServerConnection.class);
++      when(destination.getPreviousServer()).thenReturn(Optional.empty());
++      when(destination.getServerInfo()).thenReturn(serverInfo("destination"));
++
++      assertEquals(CanopySwitchPolicy.Mode.NORMAL,
++          LoginSessionHandler.selectCanopyMode(player, destination));
++    }
++  }
++
++  private static PropertyRestore seamlessWithMatchingFingerprints(UUID playerId) {
++    PropertyRestore restore = new PropertyRestore(playerId,
++        "canopy.mode", "SEAMLESS",
++        "canopy.modeFallback", "NORMAL",
++        "canopy.configurationFingerprint.source", "b".repeat(64),
++        "canopy.configurationFingerprint.destination", "b".repeat(64));
++    CanopySwitchPolicy.markPlatform(playerId, CanopySwitchPolicy.Platform.JAVA);
++    return restore;
++  }
++
++  private static ServerInfo serverInfo(String name) {
++    return new ServerInfo(name, new InetSocketAddress("127.0.0.1", 25565));
++  }
++
++  private record PropertyRestore(UUID playerId, List<String> names, List<String> values)
++      implements AutoCloseable {
++    PropertyRestore(UUID playerId, String... nameValues) {
++      this(playerId, names(nameValues), values(nameValues));
++      for (int index = 0; index < nameValues.length; index += 2) {
++        System.setProperty(nameValues[index], nameValues[index + 1]);
++      }
++    }
++
++    private static List<String> names(String[] nameValues) {
++      List<String> names = new ArrayList<>();
++      for (int index = 0; index < nameValues.length; index += 2) names.add(nameValues[index]);
++      return names;
++    }
++
++    private static List<String> values(String[] nameValues) {
++      List<String> values = new ArrayList<>();
++      for (int index = 0; index < nameValues.length; index += 2) {
++        values.add(System.getProperty(nameValues[index]));
++      }
++      return values;
++    }
++
++    @Override
++    public void close() {
++      CanopySwitchPolicy.forget(playerId);
++      for (int index = 0; index < names.size(); index++) {
++        if (values.get(index) == null) System.clearProperty(names.get(index));
++        else System.setProperty(names.get(index), values.get(index));
++      }
++    }
++  }
++}
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyArrivalViewTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyArrivalViewTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..6a391ea2a7b3764f856b11e7eebd58785fa86372
+index 00000000..194897cd
 --- /dev/null
 +++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyArrivalViewTest.java
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,139 @@
++/*
++ * Copyright (C) 2026 Canopy Contributors
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
++ */
 +package com.velocitypowered.proxy.connection.client;
 +
 +import static org.junit.jupiter.api.Assertions.*;
@@ -5432,10 +5845,26 @@ index 0000000000000000000000000000000000000000..6a391ea2a7b3764f856b11e7eebd5878
 +}
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyChunkViewTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyChunkViewTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..a7a19b044b94a64ad8e17adc7a03ee958c450c44
+index 00000000..f6f9e2d0
 --- /dev/null
 +++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyChunkViewTest.java
-@@ -0,0 +1,113 @@
+@@ -0,0 +1,129 @@
++/*
++ * Copyright (C) 2026 Canopy Contributors
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
++ */
 +package com.velocitypowered.proxy.connection.client;
 +
 +import static org.junit.jupiter.api.Assertions.*;
@@ -5551,10 +5980,26 @@ index 0000000000000000000000000000000000000000..a7a19b044b94a64ad8e17adc7a03ee95
 +}
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyConfigurationTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyConfigurationTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..8395036f6b6083c6328a84232706b0f89cc2c65e
+index 00000000..44c20a41
 --- /dev/null
 +++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyConfigurationTest.java
-@@ -0,0 +1,114 @@
+@@ -0,0 +1,130 @@
++/*
++ * Copyright (C) 2026 Canopy Contributors
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
++ */
 +package com.velocitypowered.proxy.connection.client;
 +
 +import static org.junit.jupiter.api.Assertions.*;
@@ -5671,19 +6116,26 @@ index 0000000000000000000000000000000000000000..8395036f6b6083c6328a84232706b0f8
 +}
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyGameplayFreezeLifecycleTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyGameplayFreezeLifecycleTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..f986116335885f042d5c2bc5601a1eec03ed8e81
+index 00000000..e60541a4
 --- /dev/null
 +++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyGameplayFreezeLifecycleTest.java
-@@ -0,0 +1,396 @@
+@@ -0,0 +1,403 @@
 +/*
-+ * Copyright (C) 2026 Velocity Contributors
++ * Copyright (C) 2026 Canopy Contributors
 + *
 + * This program is free software: you can redistribute it and/or modify
 + * it under the terms of the GNU General Public License as published by
 + * the Free Software Foundation, either version 3 of the License, or
 + * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
 + */
-+
 +package com.velocitypowered.proxy.connection.client;
 +
 +import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -6073,10 +6525,26 @@ index 0000000000000000000000000000000000000000..f986116335885f042d5c2bc5601a1eec
 +}
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyGameplayFreezeTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyGameplayFreezeTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..e80eb146b97294619aff801d090c1c2ae1b9c7c6
+index 00000000..c4c8de22
 --- /dev/null
 +++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyGameplayFreezeTest.java
-@@ -0,0 +1,288 @@
+@@ -0,0 +1,304 @@
++/*
++ * Copyright (C) 2026 Canopy Contributors
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
++ */
 +package com.velocitypowered.proxy.connection.client;
 +
 +import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -6367,12 +6835,12 @@ index 0000000000000000000000000000000000000000..e80eb146b97294619aff801d090c1c2a
 +}
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyHandoverTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyHandoverTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..c180bf76ff6b7795247bde0a0a7435c5ba72aaf1
+index 00000000..03ff8d18
 --- /dev/null
 +++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyHandoverTest.java
-@@ -0,0 +1,214 @@
+@@ -0,0 +1,213 @@
 +/*
-+ * Copyright (C) 2018-2025 Velocity Contributors
++ * Copyright (C) 2026 Canopy Contributors
 + *
 + * This program is free software: you can redistribute it and/or modify
 + * it under the terms of the GNU General Public License as published by
@@ -6381,13 +6849,12 @@ index 0000000000000000000000000000000000000000..c180bf76ff6b7795247bde0a0a7435c5
 + *
 + * This program is distributed in the hope that it will be useful,
 + * but WITHOUT ANY WARRANTY; without even the implied warranty of
-+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 + * GNU General Public License for more details.
 + *
 + * You should have received a copy of the GNU General Public License
-+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
 + */
-+
 +package com.velocitypowered.proxy.connection.client;
 +
 +import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -6587,10 +7054,26 @@ index 0000000000000000000000000000000000000000..c180bf76ff6b7795247bde0a0a7435c5
 +}
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyKnownPacksTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyKnownPacksTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..7790d1baf46112292d674c34bcadda00747c4b82
+index 00000000..3385165a
 --- /dev/null
 +++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyKnownPacksTest.java
-@@ -0,0 +1,27 @@
+@@ -0,0 +1,43 @@
++/*
++ * Copyright (C) 2026 Canopy Contributors
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
++ */
 +package com.velocitypowered.proxy.connection.client;
 +
 +import static org.junit.jupiter.api.Assertions.*;
@@ -6620,10 +7103,26 @@ index 0000000000000000000000000000000000000000..7790d1baf46112292d674c34bcadda00
 +}
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyLifecycleHooksTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyLifecycleHooksTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..92dd602c9a5f42a75867d4c1f89cb083ba8c6b40
+index 00000000..4ea3867a
 --- /dev/null
 +++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyLifecycleHooksTest.java
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,92 @@
++/*
++ * Copyright (C) 2026 Canopy Contributors
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
++ */
 +package com.velocitypowered.proxy.connection.client;
 +
 +import static org.junit.jupiter.api.Assertions.*;
@@ -6702,10 +7201,26 @@ index 0000000000000000000000000000000000000000..92dd602c9a5f42a75867d4c1f89cb083
 +}
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyProtocolProfileTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyProtocolProfileTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..38039f7feffcfce393babc229b9ac134efdafe7f
+index 00000000..4e4d1e09
 --- /dev/null
 +++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyProtocolProfileTest.java
-@@ -0,0 +1,137 @@
+@@ -0,0 +1,153 @@
++/*
++ * Copyright (C) 2026 Canopy Contributors
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
++ */
 +package com.velocitypowered.proxy.connection.client;
 +
 +import static org.junit.jupiter.api.Assertions.*;
@@ -6845,10 +7360,26 @@ index 0000000000000000000000000000000000000000..38039f7feffcfce393babc229b9ac134
 +}
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyServingTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyServingTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..fa969ac84e54b1a3f0a80be6039bd2cb3fba60cf
+index 00000000..6471f045
 --- /dev/null
 +++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyServingTest.java
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,126 @@
++/*
++ * Copyright (C) 2026 Canopy Contributors
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
++ */
 +package com.velocitypowered.proxy.connection.client;
 +
 +import java.util.ArrayList;
@@ -6961,19 +7492,26 @@ index 0000000000000000000000000000000000000000..fa969ac84e54b1a3f0a80be6039bd2cb
 +}
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyShadowPromotionGateTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyShadowPromotionGateTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..bbe8b16da2fe1106e4df8775b24aa2dfab4be115
+index 00000000..f547d6a2
 --- /dev/null
 +++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyShadowPromotionGateTest.java
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,88 @@
 +/*
-+ * Copyright (C) 2018-2025 Velocity Contributors
++ * Copyright (C) 2026 Canopy Contributors
 + *
 + * This program is free software: you can redistribute it and/or modify
 + * it under the terms of the GNU General Public License as published by
 + * the Free Software Foundation, either version 3 of the License, or
 + * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
 + */
-+
 +package com.velocitypowered.proxy.connection.client;
 +
 +import static org.junit.jupiter.api.Assertions.*;
@@ -7048,10 +7586,26 @@ index 0000000000000000000000000000000000000000..bbe8b16da2fe1106e4df8775b24aa2df
 +}
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopySwitchPolicyTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopySwitchPolicyTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..e3219650824ec3c575c25d40744c0efd3e51fe73
+index 00000000..ebfeb17f
 --- /dev/null
 +++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopySwitchPolicyTest.java
-@@ -0,0 +1,299 @@
+@@ -0,0 +1,315 @@
++/*
++ * Copyright (C) 2026 Canopy Contributors
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
++ */
 +package com.velocitypowered.proxy.connection.client;
 +
 +import static org.junit.jupiter.api.Assertions.*;
@@ -7353,12 +7907,12 @@ index 0000000000000000000000000000000000000000..e3219650824ec3c575c25d40744c0efd
 +}
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/ClientPlaySessionHandlerBedrockHandoverTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/ClientPlaySessionHandlerBedrockHandoverTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..43c0e44f6d3fab3e3bc7bc2879ee91cd3499c972
+index 00000000..61a46223
 --- /dev/null
 +++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/ClientPlaySessionHandlerBedrockHandoverTest.java
-@@ -0,0 +1,300 @@
+@@ -0,0 +1,299 @@
 +/*
-+ * Copyright (C) 2018-2025 Velocity Contributors
++ * Copyright (C) 2026 Canopy Contributors
 + *
 + * This program is free software: you can redistribute it and/or modify
 + * it under the terms of the GNU General Public License as published by
@@ -7367,13 +7921,12 @@ index 0000000000000000000000000000000000000000..43c0e44f6d3fab3e3bc7bc2879ee91cd
 + *
 + * This program is distributed in the hope that it will be useful,
 + * but WITHOUT ANY WARRANTY; without even the implied warranty of
-+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 + * GNU General Public License for more details.
 + *
 + * You should have received a copy of the GNU General Public License
-+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
++ * along with this program. If not, see <https://www.gnu.org/licenses/>.
 + */
-+
 +package com.velocitypowered.proxy.connection.client;
 +
 +import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -7655,5 +8208,47 @@ index 0000000000000000000000000000000000000000..43c0e44f6d3fab3e3bc7bc2879ee91cd
 +        else System.setProperty(names.get(i), values.get(i));
 +      }
 +    }
++  }
++}
+diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/util/ServerListPingHandlerTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/util/ServerListPingHandlerTest.java
+new file mode 100644
+index 00000000..038be298
+--- /dev/null
++++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/util/ServerListPingHandlerTest.java
+@@ -0,0 +1,36 @@
++/*
++ * Copyright (C) 2026 Canopy Contributors
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ */
++
++package com.velocitypowered.proxy.connection.util;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import com.velocitypowered.api.network.ProtocolVersion;
++import com.velocitypowered.api.proxy.server.ServerPing;
++import org.junit.jupiter.api.Test;
++
++class ServerListPingHandlerTest {
++  @Test
++  void localCanopyBrandKeepsTheClientProtocolNumber() {
++    ServerPing.Version version = ServerListPingHandler.localVersion(
++        ProtocolVersion.getProtocolVersion(774));
++
++    assertEquals(774, version.getProtocol());
++    assertTrue(version.getName().startsWith("Canopy "));
++  }
++
++  @Test
++  void unknownClientUsesMaximumSupportedProtocol() {
++    ServerPing.Version version = ServerListPingHandler.localVersion(ProtocolVersion.UNKNOWN);
++
++    assertEquals(ProtocolVersion.MAXIMUM_VERSION.getProtocol(), version.getProtocol());
++    assertTrue(version.getName().startsWith("Canopy "));
 +  }
 +}

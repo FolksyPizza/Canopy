@@ -1,5 +1,7 @@
 /*
  * Copyright (C) 2018-2023 Velocity Contributors
+ * Copyright (C) 2026 Canopy Contributors
+ * Modified by Canopy contributors in 2026.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -154,19 +156,8 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
     }
 
     ConnectedPlayer switchingPlayer = serverConn.getPlayer();
-    var previous = switchingPlayer.getConnectedServer();
     try {
-      serverConn.setCanopyMode(
-          com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.select(
-              com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.requested(switchingPlayer.getUniqueId()),
-              com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.fallback(),
-              previous == null,
-              previous != null && com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.sameConfiguration(
-                  com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.configurationFingerprint(
-                      previous.getServerInfo().getName()),
-                  com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.configurationFingerprint(
-                      serverConn.getServerInfo().getName())),
-              new CanopyEntityRewriter().supports(switchingPlayer.getProtocolVersion())));
+      serverConn.setCanopyMode(selectCanopyMode(switchingPlayer, serverConn));
       com.velocitypowered.proxy.connection.client.CanopyLifecycleHooks.audit(switchingPlayer.getUniqueId(), "protocol.mode_selected",
           "target", serverConn.getServerInfo().getName(), "mode", serverConn.getCanopyMode().name(),
           "protocol", switchingPlayer.getProtocolVersion().getProtocol());
@@ -213,6 +204,26 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
     }
 
     return true;
+  }
+
+  static com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.Mode selectCanopyMode(
+      ConnectedPlayer player, VelocityServerConnection destination) {
+    var connectedSource = player.getConnectedServer();
+    var requestedSource = destination.getPreviousServer().orElse(null);
+    String sourceName = requestedSource != null ? requestedSource.getServerInfo().getName()
+        : connectedSource != null ? connectedSource.getServerInfo().getName() : null;
+    boolean initialLogin = sourceName == null;
+    boolean redundantConfiguration = sourceName != null
+        && com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.sameConfiguration(
+            com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.configurationFingerprint(sourceName),
+            com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.configurationFingerprint(
+                destination.getServerInfo().getName()));
+    return com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.select(
+        com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.requested(player.getUniqueId()),
+        com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.fallback(),
+        initialLogin,
+        redundantConfiguration,
+        new CanopyEntityRewriter().supports(player.getProtocolVersion()));
   }
 
   @Override
