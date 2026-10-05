@@ -82,8 +82,10 @@ release; the command does not perform those steps or transfer world authority.
 
 An isolated synthetic Bedrock 1.26.51 client through Geyser exercised the translated Java protocol-776 path: a synthetic
 position correction was acknowledged, movement was dropped while frozen, the hold-return completed without a client
-reset packet, chat remained available, and movement resumed after release. This is one synthetic Geyser client and one
-protocol path; it does not certify an authenticated Bedrock device, other Bedrock versions, native Java 26.2, or a
+reset packet, chat remained available, and movement resumed after release. A second run forced candidate plugin
+readiness to fail and confirmed the same session returned through the rollback build. Neither run emitted additional
+`start_game`, respawn, dimension-change or transfer packets. These are two runs of one synthetic Geyser client and one
+protocol path; they do not certify an authenticated Bedrock device, other Bedrock versions, native Java 26.2, or a
 production update flow. The position profile uses clientbound wire packet `0x48`; its position-correction body was
 accepted by the translated client and its synthetic teleport acknowledgement was observed by the gate.
 

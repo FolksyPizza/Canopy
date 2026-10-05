@@ -50,11 +50,13 @@ recovery before and after that fence. Focused unit tests exercise the coordinato
 
 No live backend calls this coordinator. Canopy still has no crash-consistent world checkpoint provider, complete ordered
 world-mutation journal, deterministic replay engine, standby boot/catch-up lifecycle, or global world-write enforcement.
-An isolated fixture controller has exercised the gateway's `/canopyfreeze` gate during a held backend restart, but that
-controller does not call `ZeroDowntimeUpdateCoordinator` or provide complete-world replay. One synthetic Bedrock
-protocol-776 session stayed connected through the hold, backend stop/copy/start, return, chat and movement without
-additional JoinGame, Respawn, dimension-change or transfer packets. This verifies one Geyser-translated session path;
-it does not verify authenticated devices, every protocol, production parity or a continuously replicated world.
+An isolated Vanilla fixture controller has exercised the gateway's `/canopyfreeze` gate during a held backend restart,
+but that controller does not call `ZeroDowntimeUpdateCoordinator` or provide complete-world replay. A synthetic
+Bedrock protocol-776 session stayed connected through backend stop/copy/start, return, chat and movement. A second run
+forced candidate plugin readiness to fail; the controller started the rollback build and returned the same held session.
+Neither run emitted additional Bedrock `start_game`, respawn, dimension-change or transfer packets. This verifies one
+Geyser-translated protocol path and two isolated recovery outcomes; it does not verify authenticated devices, every
+protocol, production parity or a continuously replicated world.
 
 The coordinator capability values are evidence required for promotion; no runtime provider produces or independently
 verifies them yet. Player snapshots alone cannot satisfy those gates, and shadow chunk streaming is not a world journal.
