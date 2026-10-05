@@ -58,6 +58,35 @@ self-ID collisions, damage references, newer attack/spectator requests and gener
 These tests do not certify every mechanic or every client/server pairing. Mixed server versions
 require a compatible protocol translator and matching effective client configuration.
 
+These profiles describe Java Edition play packets. Bedrock clients enter through Geyser's UDP listener;
+Geyser's [Velocity setup](https://geysermc.org/wiki/geyser/setup/) says it imitates a Java 26.2 client, while
+[Floodgate](https://geysermc.org/wiki/floodgate/setup/proxy-servers/) supplies Bedrock identity. That makes
+Java protocol coverage necessary, but it does not certify the translated Bedrock path. One isolated synthetic Geyser
+Bedrock 1.26.51 client passed a same-world protocol-776 hold-return cycle described below; no native authenticated
+Bedrock-device or all-version seamless-switch result is claimed. Keep Bedrock on normal switches by default until the
+required client and gameplay matrix passes through the deployed Geyser/Floodgate versions.
+The gateway forces an unclassified (`UNKNOWN`) session to NORMAL. Confirmed Bedrock sessions are also forced to
+NORMAL unless both `canopy.allowSeamless=true` and `canopy.experimentalBedrockSeamless=true` are set. Exact input-cut
+handover is restricted to confirmed Java sessions. The flags only open a Bedrock trial; they do not certify Bedrock
+compatibility.
+
+### Maintenance freeze gate
+
+CanopySwitch also registers `/canopyfreeze <player|all> <on|off|status>` for operators with `canopy.freeze` and for
+the proxy console. It is a bounded gameplay pause around an operator-managed transfer, not a world-copy or replication
+protocol. The gate runs before typed and raw PLAY-packet dispatch, sends a visible position correction, and fails closed
+when the session lacks an explicit packet profile or validated position anchor. Native Java profiles are limited to
+protocols 771–777. While frozen it keeps chat and required transport/teleport acknowledgements available and drops
+movement and other gameplay input. The operator must still coordinate hold admission, target readiness, routing and
+release; the command does not perform those steps or transfer world authority.
+
+An isolated synthetic Bedrock 1.26.51 client through Geyser exercised the translated Java protocol-776 path: a synthetic
+position correction was acknowledged, movement was dropped while frozen, the hold-return completed without a client
+reset packet, chat remained available, and movement resumed after release. This is one synthetic Geyser client and one
+protocol path; it does not certify an authenticated Bedrock device, other Bedrock versions, native Java 26.2, or a
+production update flow. The position profile uses clientbound wire packet `0x48`; its position-correction body was
+accepted by the translated client and its synthetic teleport acknowledgement was observed by the gate.
+
 For protocols newer than 1.21.11, changed chunks are sent whole. Identical clean chunks may still
 be reused. Block/light delta codecs for these newer layouts need separate verification.
 

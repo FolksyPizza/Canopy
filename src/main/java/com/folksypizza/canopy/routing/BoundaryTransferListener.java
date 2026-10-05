@@ -462,8 +462,9 @@ public class BoundaryTransferListener implements Listener, org.bukkit.plugin.mes
      */
     private void beginExactHandover(Player p, Location landing, LandingMotion motion) {
         UUID id = p.getUniqueId();
+        UUID transferId = UUID.randomUUID();
         pendingCut.put(id, new PendingCut(landing, motion));
-        sendSwitch(p, true);
+        sendSwitch(p, true, transferId);
         p.getScheduler().runDelayed(plugin, t -> {
             PendingCut pending = pendingCut.remove(id);
             if (pending != null && p.isOnline()) {
@@ -532,9 +533,17 @@ public class BoundaryTransferListener implements Listener, org.bukkit.plugin.mes
 
     /** Ask the gateway to switch; {@code exact} (a trailing byte older gateways ignore) requests the input cut. */
     private void sendSwitch(Player p, boolean exact) {
+        sendSwitch(p, exact, null);
+    }
+
+    private void sendSwitch(Player p, boolean exact, UUID transferId) {
         com.google.common.io.ByteArrayDataOutput out = com.google.common.io.ByteStreams.newDataOutput();
         out.writeUTF(peerServer);
         out.writeByte(exact ? 1 : 0);
+        if (exact && transferId != null) {
+            out.writeLong(transferId.getMostSignificantBits());
+            out.writeLong(transferId.getLeastSignificantBits());
+        }
         log.info("Handing {} to server '{}'", p.getName(), peerServer);
         p.sendPluginMessage(plugin, SWITCH_CHANNEL, out.toByteArray());
     }

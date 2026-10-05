@@ -112,8 +112,11 @@ on every shard. Entries bootstrap `canopy_chunk_owners`; conflicting owners are 
 supports spawn lookup by chunk set. Walking still uses the configured X seam; directory seeding does not
 perform repartitioning. World names, dimensions, gamerules and world-spawn settings must agree across shards.
 
-On-demand zero-downtime updates remain a design proposal. Managed sessions persist player state, but Canopy does not
-yet checkpoint and replay a complete world or launch an update standby. See [On-demand updates](docs/on-demand-updates.md).
+Canopy now has an unintegrated, fail-closed update coordinator with durable world-authority epochs, an atomic promotion
+fence, and explicit checkpoint, journal, session, chat, and recovery evidence. No backend currently supplies a complete
+world checkpoint or mutation journal to it, and it does not yet boot a standby or route sessions. The proxy also has an
+experimental `/canopyfreeze` input gate for operator-managed holds; that gate does not coordinate an update or transfer
+world authority. Canopy does not yet provide an end-to-end update system. See [On-demand updates](docs/on-demand-updates.md).
 
 Create `plugins/canopyswitch/session.properties` on CSG:
 

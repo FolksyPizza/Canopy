@@ -35,7 +35,9 @@ import java.util.concurrent.ConcurrentHashMap;
         description = "Canopy seamless shard handover", dependencies = {
             @Dependency(id = "viaversion", optional = true),
             @Dependency(id = "viabackwards", optional = true),
-            @Dependency(id = "viarewind", optional = true)
+            @Dependency(id = "viarewind", optional = true),
+            @Dependency(id = "floodgate", optional = true),
+            @Dependency(id = "geyser", optional = true)
         })
 public class CanopySwitchPlugin {
 
@@ -72,6 +74,8 @@ public class CanopySwitchPlugin {
     public void onInit(ProxyInitializeEvent event) {
         server.getChannelRegistrar().register(CHANNEL, READY_CHANNEL, REPAIR_CHANNEL,
             MinecraftChannelIdentifier.create("canopy", "cancelled"));
+        server.getCommandManager().register(server.getCommandManager().metaBuilder("canopyfreeze")
+            .plugin(this).build(), new CanopyFreezeCommand(server));
         logger.info("CanopySwitch ready — listening on {}", CHANNEL.getId());
         try {
             var config = new java.util.Properties();
@@ -179,9 +183,63 @@ public class CanopySwitchPlugin {
     }
 
     @Subscribe
+    public void onPostLogin(com.velocitypowered.api.event.connection.PostLoginEvent event) {
+        Player player = event.getPlayer();
+        UUID playerId = player.getUniqueId();
+        ClientPlatformClassifier.Platform platform = ClientPlatformClassifier.classify(playerId,
+            floodgatePlayer(playerId), geyserPlayer(playerId));
+        try {
+            Class<?> policy = Class.forName("com.velocitypowered.proxy.connection.client.CanopySwitchPolicy", true,
+                server.getClass().getClassLoader());
+            policy.getMethod("markPlatform", UUID.class, String.class).invoke(null, playerId, platform.name());
+            audit.event("client.platform", java.util.Map.of("player", playerId,
+                "platform", platform.name().toLowerCase(java.util.Locale.ROOT)));
+        } catch (ClassNotFoundException stockVelocity) {
+            // Standard Velocity has no Canopy mode policy to classify.
+        } catch (ReflectiveOperationException failure) {
+            logger.warn("Could not register client platform with the Canopy switch policy");
+        }
+    }
+
+    @Subscribe
     public void onDisconnect(com.velocitypowered.api.event.connection.DisconnectEvent event) {
         audit.event("client.disconnected", java.util.Map.of("player", event.getPlayer().getUniqueId()));
         switchStartedNanos.remove(event.getPlayer().getUniqueId());
+        try {
+            Class<?> policy = Class.forName("com.velocitypowered.proxy.connection.client.CanopySwitchPolicy", true,
+                server.getClass().getClassLoader());
+            policy.getMethod("forget", UUID.class).invoke(null, event.getPlayer().getUniqueId());
+        } catch (ReflectiveOperationException ignored) { }
+    }
+
+    private Boolean floodgatePlayer(UUID playerId) {
+        try {
+            ClassLoader loader = pluginClassLoader("floodgate");
+            if (loader == null) return null;
+            Class<?> api = Class.forName("org.geysermc.floodgate.api.FloodgateApi", true, loader);
+            Object instance = api.getMethod("getInstance").invoke(null);
+            if (instance == null) return null;
+            Object result = api.getMethod("isFloodgatePlayer", UUID.class).invoke(instance, playerId);
+            return result instanceof Boolean value ? value : null;
+        } catch (ReflectiveOperationException | LinkageError | RuntimeException ignored) { return null; }
+    }
+
+    private Boolean geyserPlayer(UUID playerId) {
+        try {
+            ClassLoader loader = pluginClassLoader("geyser");
+            if (loader == null) return null;
+            Class<?> api = Class.forName("org.geysermc.geyser.api.GeyserApi", true, loader);
+            Object instance = api.getMethod("api").invoke(null);
+            if (instance == null) return null;
+            return api.getMethod("connectionByUuid", UUID.class).invoke(instance, playerId) != null;
+        } catch (ReflectiveOperationException | LinkageError | RuntimeException ignored) { return null; }
+    }
+
+    private ClassLoader pluginClassLoader(String pluginId) {
+        var plugin = server.getPluginManager().getPlugin(pluginId);
+        if (plugin.isEmpty()) return null;
+        var instance = plugin.get().getInstance();
+        return instance.map(value -> value.getClass().getClassLoader()).orElse(null);
     }
 
     @Subscribe

@@ -24,6 +24,7 @@ import com.velocitypowered.proxy.protocol.packet.JoinGamePacket;
 import com.velocitypowered.proxy.server.VelocityRegisteredServer;
 import io.netty.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.UUID;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -37,7 +38,6 @@ public final class CanopyShadow {
 
   private static final Logger logger = LogManager.getLogger(CanopyShadow.class);
   private static final long REFRESH_TIMEOUT_MILLIS = 2_000L;
-  private static final long PROMOTE_TIMEOUT_MILLIS = 3_000L;
 
   private final VelocityServer server;
   private final ConnectedPlayer player;
@@ -49,7 +49,7 @@ public final class CanopyShadow {
   private VelocityServerConnection conn;
   private JoinGamePacket joinGame;
   private long lastRefresh;
-  private long promoteArmedAt;
+  private final CanopyShadowPromotionGate promotion = new CanopyShadowPromotionGate();
   private ScheduledFuture<?> ticker;
 
   CanopyShadow(VelocityServer server, ConnectedPlayer player, ClientPlaySessionHandler playHandler) {
@@ -112,23 +112,40 @@ public final class CanopyShadow {
   }
 
   /** A crossing to {@code target} with an attached shadow: promote it once the source confirms its snapshot. */
-  public synchronized boolean armPromotion(String target) {
-    if (conn == null || joinGame == null || !target.equalsIgnoreCase(this.target)) {
+  public synchronized boolean armPromotion(String target, VelocityServerConnection source, UUID transferId) {
+    if (conn == null || joinGame == null || source == null || player.getConnectedServer() != source
+        || target == null || !target.equalsIgnoreCase(this.target)) {
       return false;
     }
-    promoteArmedAt = System.currentTimeMillis();
-    return true;
+    return promotion.arm(source, target, transferId, System.nanoTime());
   }
 
   public synchronized boolean promotionArmed() {
-    return promoteArmedAt > 0;
+    return promotion.isPending();
   }
 
-  /** The source's snapshot is with the destination: make the shadow the serving session. */
-  public synchronized void promote() {
-    if (promoteArmedAt == 0 || conn == null || joinGame == null) {
-      return;
+  /** Accept one source-bound acknowledgement for the currently armed shadow transfer. */
+  public synchronized boolean acknowledgeAndPromote(VelocityServerConnection source, UUID transferId) {
+    long now = System.nanoTime();
+    if (promotion.expired(now)) {
+      CanopyLifecycleHooks.audit(player.getUniqueId(), "shadow.confirmation_timeout", "target", target);
+      logger.warn("Canopy shadow for {}: no valid snapshot acknowledgement; aborting the handover", player.getUsername());
+      close();
+      return false;
     }
+    if (source == null || player.getConnectedServer() != source || conn == null || joinGame == null
+        || conn.getConnection() == null || conn.getConnection().isClosed()
+        || !promotion.acknowledge(source, target, transferId, now)) {
+      CanopyLifecycleHooks.audit(player.getUniqueId(), "shadow.acknowledgement_rejected", "target", target);
+      return false;
+    }
+    if (!promotion.consumeAcknowledgement()) return false;
+    promoteConfirmedShadow();
+    return true;
+  }
+
+  /** The source's correlated acknowledgement arrived over the source backend connection. */
+  private void promoteConfirmedShadow() {
     CanopyLifecycleHooks.audit(player.getUniqueId(), "shadow.promoted", "target", target);
     VelocityServerConnection shadow = conn;
     JoinGamePacket join = joinGame;
@@ -145,28 +162,49 @@ public final class CanopyShadow {
       logger.info("Canopy shadow for {} on {} closed", player.getUsername(), target);
       conn.disconnect();
     }
-    reset();
+    VelocityServerConnection pendingSource = reset();
     playHandler.getCanopyChunkView().shadowEnded();
+    abortPendingHandover(pendingSource);
   }
 
   /** The shadow's connection ended on its own (the destination refused or dropped the ghost). */
   public synchronized void shadowLost(VelocityServerConnection shadow) {
     if (shadow == conn) {
       CanopyLifecycleHooks.audit(player.getUniqueId(), "shadow.lost", "target", target);
-      reset();
+      VelocityServerConnection pendingSource = reset();
       playHandler.getCanopyChunkView().shadowEnded();
+      abortPendingHandover(pendingSource);
     }
   }
 
-  private void reset() {
+  private VelocityServerConnection reset() {
+    VelocityServerConnection pendingSource = promotion.isPending()
+        ? (VelocityServerConnection) promotion.source() : null;
+    promotion.clear();
     conn = null;
     joinGame = null;
-    promoteArmedAt = 0;
     target = null;
+    return pendingSource;
+  }
+
+  private void abortPendingHandover(VelocityServerConnection source) {
+    if (source == null || !player.isActive()) return;
+    try {
+      player.getConnection().eventLoop().execute(() -> {
+        if (!player.isActive()) return;
+        if (player.getConnectedServer() == source) {
+          playHandler.getCanopyHandover().cancel();
+        } else {
+          playHandler.getCanopyHandover().abandon();
+        }
+      });
+    } catch (RuntimeException eventLoopClosed) {
+      // The client disconnect path owns final ByteBuf cleanup; no stale shadow may be promoted here.
+      CanopyLifecycleHooks.audit(player.getUniqueId(), "shadow.abort_release_unavailable", "target", target);
+    }
   }
 
   private void tick() {
-    boolean promoteNow;
     synchronized (this) {
       if (!player.isActive()) {
         close();
@@ -176,16 +214,17 @@ public final class CanopyShadow {
         }
         return;
       }
+      long nowNanos = System.nanoTime();
+      if (promotion.expired(nowNanos)) {
+        CanopyLifecycleHooks.audit(player.getUniqueId(), "shadow.confirmation_timeout", "target", target);
+        logger.warn("Canopy shadow for {}: no valid snapshot acknowledgement; aborting the handover", player.getUsername());
+        close();
+        return;
+      }
       long now = System.currentTimeMillis();
-      promoteNow = promoteArmedAt > 0 && now - promoteArmedAt > PROMOTE_TIMEOUT_MILLIS;
-      if (!promoteNow && promoteArmedAt == 0 && conn != null && now - lastRefresh > REFRESH_TIMEOUT_MILLIS) {
+      if (!promotion.isPending() && conn != null && now - lastRefresh > REFRESH_TIMEOUT_MILLIS) {
         close();
       }
-    }
-    if (promoteNow) {
-      CanopyLifecycleHooks.audit(player.getUniqueId(), "shadow.confirmation_timeout", "target", target);
-      logger.warn("Canopy shadow for {}: no snapshot confirmation; promoting anyway", player.getUsername());
-      promote();
     }
   }
 }

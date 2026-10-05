@@ -1,22 +1,28 @@
 package com.velocitypowered.proxy.connection.client;
 
 import java.util.Locale;
-import java.util.UUID;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /** Selects the client transition once, before the destination starts configuration. */
 public final class CanopySwitchPolicy {
   public enum Mode { NORMAL, FAST, SEAMLESS }
   public enum Fallback { REJECT, NORMAL, FAST }
+  public enum Platform { JAVA, BEDROCK, UNKNOWN }
 
   private static final ConcurrentHashMap<UUID, Mode> sessionModes = new ConcurrentHashMap<>();
   private static final Set<UUID> normalRefresh = ConcurrentHashMap.newKeySet();
+  private static final ConcurrentHashMap<UUID, Platform> sessionPlatforms = new ConcurrentHashMap<>();
 
   private CanopySwitchPolicy() { }
 
   public static Mode requested(UUID player) {
-    return normalRefresh.contains(player) ? Mode.NORMAL : sessionMode(player);
+    Mode mode = normalRefresh.contains(player) ? Mode.NORMAL : sessionMode(player);
+    Platform platform = platform(player);
+    if (platform == Platform.UNKNOWN) return Mode.NORMAL;
+    return platform == Platform.BEDROCK && mode != Mode.NORMAL && !bedrockTrialEnabled()
+        ? Mode.NORMAL : mode;
   }
 
   public static Mode sessionMode(UUID player) { return sessionModes.getOrDefault(player, requested()); }
@@ -40,6 +46,45 @@ public final class CanopySwitchPolicy {
   public static void forget(UUID player) {
     normalRefresh.remove(player);
     sessionModes.remove(player);
+    sessionPlatforms.remove(player);
+  }
+
+  /** Marks the platform resolved for the authenticated client session. */
+  public static void markPlatform(UUID player, Platform platform) {
+    if (platform == null || platform == Platform.UNKNOWN) sessionPlatforms.remove(player);
+    else sessionPlatforms.put(player, platform);
+  }
+
+  /** String bridge for the separately loaded CanopySwitch plugin. Invalid values fail closed. */
+  public static void markPlatform(UUID player, String platform) {
+    Platform resolved;
+    try {
+      resolved = Platform.valueOf(platform);
+    } catch (RuntimeException invalid) {
+      resolved = Platform.UNKNOWN;
+    }
+    markPlatform(player, resolved);
+  }
+
+  /** Compatibility bridge for the current CanopyMaintenance plugin API. A false result cannot demote or guess. */
+  @Deprecated
+  public static void markBedrock(UUID player, boolean bedrock) {
+    if (bedrock) markPlatform(player, Platform.BEDROCK);
+  }
+
+  /** Unclassified sessions remain UNKNOWN and cannot use FAST or SEAMLESS transitions. */
+  public static Platform platform(UUID player) {
+    return sessionPlatforms.getOrDefault(player, Platform.UNKNOWN);
+  }
+
+  /** Exact packet cuts are limited to positively identified Java sessions. */
+  static boolean mayUseExactHandover(UUID player) {
+    return platform(player) == Platform.JAVA && requested(player) == Mode.SEAMLESS;
+  }
+
+  private static boolean bedrockTrialEnabled() {
+    return Boolean.getBoolean("canopy.allowSeamless")
+        && Boolean.getBoolean("canopy.experimentalBedrockSeamless");
   }
 
   public static Mode requested() {

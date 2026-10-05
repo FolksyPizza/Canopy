@@ -24,6 +24,7 @@ import com.velocitypowered.proxy.protocol.packet.PluginMessagePacket;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import java.util.ArrayDeque;
+import java.util.UUID;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -95,7 +96,7 @@ public final class CanopyHandover {
   }
 
   public synchronized void armRespawnRepair(MinecraftConnection destination) {
-    if (currentArrival(destination) && enabled(player.getProtocolVersion().getProtocol())) {
+    if (currentArrival(destination) && enabled()) {
       arrivalView.armRepair();
     }
   }
@@ -103,13 +104,13 @@ public final class CanopyHandover {
   /** The live source's ordered cut permits recovery of a stale native copy on the next attachment. */
   public synchronized void prepareRespawnRepair(MinecraftConnection connection) {
     if (state == State.CUT && source != null && source.getConnection() == connection
-        && enabled(player.getProtocolVersion().getProtocol())) arrivalRepairAllowed = true;
+        && enabled()) arrivalRepairAllowed = true;
   }
 
   /** Run before chunk-view computation: a hidden native repair must not clear cached client chunks. */
   public synchronized boolean consumeRepairReset(ByteBuf packet, MinecraftConnection destination,
       com.velocitypowered.proxy.connection.backend.CanopyEntityRewriter rewriter) {
-    if (!currentArrival(destination) || !enabled(player.getProtocolVersion().getProtocol())) return false;
+    if (!currentArrival(destination) || !enabled()) return false;
     CanopyProtocolProfile profile = CanopyProtocolProfile.find(player.getProtocolVersion().getProtocol());
     boolean consumed = arrivalView.consumeRepair(profile, packet, rewriter::sameWorld);
     if (consumed && profile.clientbound(peekId(packet)) == 0x50) {
@@ -159,15 +160,44 @@ public final class CanopyHandover {
     }
   }
 
-  public static boolean enabled(int protocol) {
-    return ENABLED && CanopySwitchPolicy.requested() == CanopySwitchPolicy.Mode.SEAMLESS
-        && CanopyProtocolProfile.find(protocol) != null;
+  /** The optional exact-handover correlation id appended after the exact-request byte. */
+  public static UUID switchTransferId(ByteBuf content) {
+    int start = content.readerIndex();
+    try {
+      int nameLength = content.readUnsignedShort();
+      content.skipBytes(nameLength);
+      if (!content.isReadable() || content.readUnsignedByte() != 1 || content.readableBytes() != 16) {
+        return null;
+      }
+      return new UUID(content.readLong(), content.readLong());
+    } catch (Exception ex) {
+      return null;
+    } finally {
+      content.readerIndex(start);
+    }
+  }
+
+  /** A {@code canopy:cut-done} payload is exactly the correlation id for one armed crossing. */
+  public static UUID acknowledgementTransferId(ByteBuf content) {
+    int start = content.readerIndex();
+    try {
+      if (content.readableBytes() != 16) return null;
+      return new UUID(content.readLong(), content.readLong());
+    } catch (Exception ex) {
+      return null;
+    } finally {
+      content.readerIndex(start);
+    }
+  }
+
+  private boolean enabled() {
+    return ENABLED && CanopySwitchPolicy.mayUseExactHandover(player.getUniqueId())
+        && CanopyProtocolProfile.find(player.getProtocolVersion().getProtocol()) != null;
   }
 
   /** The source asked for a switch: hold input from here and mark the cut in the source's stream. */
   public synchronized void begin(VelocityServerConnection source) {
-    if (!ENABLED || CanopyProtocolProfile.find(player.getProtocolVersion().getProtocol()) == null
-        || state != State.IDLE) {
+    if (!enabled() || state != State.IDLE) {
       return;
     }
     MinecraftConnection smc = source.getConnection();

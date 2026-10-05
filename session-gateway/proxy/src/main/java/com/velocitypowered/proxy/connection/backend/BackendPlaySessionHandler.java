@@ -339,8 +339,10 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
       return true;
     }
     if ("canopy:cut-done".equals(packet.getChannel())) {
-      // Source: the exact snapshot has reached the destination. With a shadow armed, it now takes over.
-      playerSessionHandler.getCanopyShadow().promote();
+      // Only the source connection that armed this crossing may acknowledge its matching transfer.
+      java.util.UUID transferId = com.velocitypowered.proxy.connection.client.CanopyHandover
+          .acknowledgementTransferId(packet.content());
+      playerSessionHandler.getCanopyShadow().acknowledgeAndPromote(serverConn, transferId);
       return true;
     }
     if (com.velocitypowered.proxy.connection.client.CanopyHandover.SWITCH_CHANNEL.equals(packet.getChannel())
@@ -348,7 +350,10 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
       playerSessionHandler.getCanopyHandover().begin(serverConn);
       // With a shadow on the target, the crossing promotes it rather than opening a new connection.
       String target = com.velocitypowered.proxy.connection.client.CanopyHandover.switchTarget(packet.content());
-      if (target != null && playerSessionHandler.getCanopyShadow().armPromotion(target)) {
+      java.util.UUID transferId = com.velocitypowered.proxy.connection.client.CanopyHandover
+          .switchTransferId(packet.content());
+      if (target != null && transferId != null
+          && playerSessionHandler.getCanopyShadow().armPromotion(target, serverConn, transferId)) {
         return true;
       }
     } else if (com.velocitypowered.proxy.connection.client.CanopyHandover.READY_CHANNEL.equals(packet.getChannel())) {
@@ -530,6 +535,7 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
 
   @Override
   public void handleUnknown(ByteBuf buf) {
+    observeCanopyPosition(buf);
     if (playerSessionHandler.getCanopyHandover().consumeRepairReset(
         buf, serverConn.ensureConnected(), playerSessionHandler.getCanopyRewriter())) return;
     java.util.List<ByteBuf> instead = playerSessionHandler.getCanopyRewriter()
@@ -573,6 +579,11 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
       playerConnection.flush();
       packetsFlushed = 0;
     }
+  }
+
+  /** Observe a backend correction before any serving-lane or handover transform can consume it. */
+  public void observeCanopyPosition(ByteBuf packet) {
+    com.velocitypowered.proxy.connection.client.CanopyGameplayFreeze.observeClientbound(serverConn.getPlayer(), packet);
   }
 
   @Override

@@ -1,8 +1,8 @@
 # Exact handover
 
 **Status: experimental and disabled by default.** The current implementation does not serialize the cut against every
-decoded or queued client packet. Its timeout reports the problem but does not release gateway-held input or recover the
-session. Do not enable it on a live network. The ordinary projected handover remains the active path.
+decoded or queued client packet. If an exact cut has begun, its own timeout still does not prove recovery or release all
+gateway-held input. Do not enable it on a live network. The ordinary projected handover remains the active path.
 
 The intended result is a peer arrival with the same position, held slot, health, inventory and motion, without a client
 correction. That result has not been established end-to-end for the current implementation.
@@ -22,10 +22,12 @@ a jump, especially when the peer is cold.
 around the predicted landing, so the arrival does not wait on chunk loading or generation. Hints create no player and
 change no game state; if the player turns back they stop, and the tickets are released after `expire-ms`.
 
-**Cut (crossing).** The source asks the gateway to switch with the exact flag. The current gateway gates only raw
-unknown packets on its client input path; decoded packet handlers and already queued work are not covered by one
-serialized cut. Therefore the marker does not currently prove a complete input boundary. The source snapshots at the
-marker, pushes state to the peer and freezes its copy, but that snapshot may not include every client action.
+**Cut (crossing).** The source asks the gateway to switch with the exact flag. The seam-crossing `CanopyHandover` path
+still gates only raw unknown packets; decoded packet handlers and already queued work are not covered by one serialized
+cut. Therefore the marker does not currently prove a complete input boundary. The separate `/canopyfreeze` maintenance
+gate runs before both typed and raw PLAY dispatch, but it is not used by this crossing protocol and does not make its
+snapshot complete. The source snapshots at the marker, pushes state to the peer and freezes its copy, but that snapshot
+may not include every client action.
 
 **Arrival.** The client switches with the no-respawn switch, so its world stays in place. The peer applies the state
 server-side; the gateway can hide its position corrections and replay held raw input after `canopy:ready`. This path
@@ -67,14 +69,16 @@ over; nobody is disconnected.
 
 An opt-in prototype can open a second backend connection and overlay destination chunks. The backend does not yet
 implement a verified hidden/inert ghost lifecycle, and the destination snapshot acknowledgement has no sender in this
-tree. Promotion can currently proceed after an acknowledgement timeout. Keep both `canopy.shadow` and
-`canopy.shadow.experimental` disabled; this prototype is not ZDU and is not safe for live promotion.
+tree. Promotion now requires a one-time acknowledgement from the active source connection with the matching random
+transfer ID; an acknowledgement timeout closes the shadow and cancels or releases the held cut. Since no trusted
+readiness sender exists, this prototype cannot currently promote. Keep both `canopy.shadow` and
+`canopy.shadow.experimental` disabled; it is not a zero-downtime update system or safe for live promotion.
 
 ## Prototype protocol
 
 | Channel | Direction | Meaning |
 | --- | --- | --- |
-| `canopy:switch` | shard to gateway | Target server (UTF), then one byte: 1 requests the experimental handover |
+| `canopy:switch` | shard to gateway | Target server (UTF), then one byte: 1 requests the experimental handover; exact requests also carry a transfer UUID |
 | `canopy:cut` | gateway to source shard | Input cut marker: snapshot now |
 | `canopy:cut-cancel` | gateway to source shard | The switch failed; resume the player |
 | `canopy:ready` | destination shard to gateway | State applied: replay the held input |
@@ -82,13 +86,15 @@ tree. Promotion can currently proceed after an acknowledgement timeout. Keep bot
 
 The prototype holds selected raw movement, player-input and held-slot packets while allowing protocol acknowledgements
 through. Its gate does not cover every decoded handler or queued packet, so the input boundary and treatment of other
-actions are not yet reliable. These channels describe the prototype; their presence does not make it safe to enable.
+actions are not yet reliable. The independent maintenance freeze gate does cover dispatch-time input, but it has only
+been exercised as an operator pause and does not supply the exact crossing's cut marker, full snapshot, or rollback
+coordination. These channels describe the prototype; their presence does not make it safe to enable.
 
 ## Failure handling
 
 - A gateway without the exact handover never sends the marker: after one second the source falls back to the
   projected handover. A shard without it never sets the flag, and the gateway does not cut.
-- No ready signal within three seconds of arrival (ten of the cut): the gateway logs a timeout and continues holding gameplay input until a ready signal or cancellation arrives. It does not infer that state was applied or automatically roll back; the player can remain stuck if destination restoration failed. The source shard only self-thaws after twelve seconds when the player never left it. Recovery after an interrupted handover remains an implementation gap.
+- No ready signal within three seconds of arrival (ten of the cut): the exact handover can still hold gameplay input until a ready signal or cancellation arrives. It does not infer that state was applied or fully recover every interrupted cut; the player can remain stuck if destination restoration failed. The source shard only self-thaws after twelve seconds when the player never left it. Shadow promotion has a separate three-second timeout that now aborts and releases/cancels its pending cut instead of promoting.
 - A switch into a different world or dimension type uses the respawn switch; held movement is dropped.
 - A frozen source copy whose player never leaves resumes after twelve seconds.
 
@@ -101,6 +107,7 @@ disconnect path release the player safely. The CanopySwitch plugin registers `ca
 
 ## Validation status
 
-Unit tests cover selected protocol packet IDs, chunk-view transformations and serving order. They do not exercise the
-exact cut, all decoded input paths, destination acknowledgement, timeout recovery, Grim interaction or a full native
-handover. No end-to-end exact-handover result is currently claimed.
+Unit tests cover selected protocol packet IDs, chunk-view transformations, serving order, and source/target/transfer
+correlation for the shadow promotion gate. They do not exercise the exact cut, all decoded input paths, a real
+destination acknowledgement, full timeout recovery, Grim interaction or a full native handover. No end-to-end
+exact-handover result is currently claimed.

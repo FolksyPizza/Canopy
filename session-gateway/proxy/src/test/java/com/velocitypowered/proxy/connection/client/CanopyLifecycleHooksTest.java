@@ -27,9 +27,13 @@ class CanopyLifecycleHooksTest {
       assertEquals(protocol <= 774 ? 0x0b : 0x0c, profile.serverboundWire(0x0b));
     }
   }
-  @Test void auditTracePreservesPacketAndOldShutdownCannotRemoveNewSink() {
+  @Test void auditSinksFanOutWithoutSharingMutableFieldsAndOldShutdownCannotRemoveNewSink() {
+    var oldRows = new java.util.ArrayList<java.util.Map<String, Object>>();
     var rows = new java.util.ArrayList<java.util.Map<String, Object>>();
-    java.util.function.BiConsumer<UUID, java.util.Map<String, Object>> old = (id, fields) -> {};
+    java.util.function.BiConsumer<UUID, java.util.Map<String, Object>> old = (id, fields) -> {
+      fields.remove("event");
+      oldRows.add(fields);
+    };
     java.util.function.BiConsumer<UUID, java.util.Map<String, Object>> replacement = (id, fields) -> rows.add(fields);
     UUID player = UUID.randomUUID();
     var packet = io.netty.buffer.Unpooled.buffer();
@@ -37,15 +41,22 @@ class CanopyLifecycleHooksTest {
     try {
       CanopyLifecycleHooks.registerAudit(old, false);
       CanopyLifecycleHooks.registerAudit(replacement, true);
+      CanopyLifecycleHooks.audit(player, "protocol.configuration_observed", "fingerprint", "a".repeat(64));
+      assertEquals(1, oldRows.size());
+      assertEquals(1, rows.size());
+      assertFalse(oldRows.getFirst().containsKey("event"));
+      assertEquals("protocol.configuration_observed", rows.getFirst().get("event"));
+      assertEquals("a".repeat(64), rows.getFirst().get("fingerprint"));
+
       CanopyLifecycleHooks.unregisterAudit(old);
       CanopyLifecycleHooks.trace(player, "serverbound", packet);
       assertEquals(0, packet.readerIndex()); assertEquals(2, packet.readableBytes());
-      assertEquals(1, rows.size());
-      assertEquals(0x1d, rows.getFirst().get("packetId"));
-      assertEquals(2, rows.getFirst().get("packetBytes"));
-      assertFalse(rows.getFirst().containsKey("payload"));
+      assertEquals(2, rows.size());
+      assertEquals(0x1d, rows.getLast().get("packetId"));
+      assertEquals(2, rows.getLast().get("packetBytes"));
+      assertFalse(rows.getLast().containsKey("payload"));
     } finally { packet.release(); CanopyLifecycleHooks.unregisterAudit(replacement); }
-    CanopyLifecycleHooks.audit(player, "test.after_close"); assertEquals(1, rows.size());
+    CanopyLifecycleHooks.audit(player, "test.after_close"); assertEquals(2, rows.size());
   }
 
   @Test void failingAuditSinkCannotBreakRespawnOrPacketHandling() {
