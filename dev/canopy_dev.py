@@ -5,14 +5,18 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
 import shlex
 import shutil
+import socket
+import struct
 import subprocess
 import sys
 import tempfile
+import time
 import xml.etree.ElementTree as ET
 
 
@@ -20,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 GATEWAY = ROOT / "session-gateway"
 GATEWAY_PATCH = GATEWAY / "canopy-session-gateway.patch"
 VELOCITY_URL = "https://github.com/PaperMC/Velocity.git"
+SUPPORTED_PROTOCOLS = tuple(range(771, 778))
 
 
 def java_major_from_text(output: str) -> int | None:
@@ -33,6 +38,122 @@ def java_major_from_text(output: str) -> int | None:
 
 def is_revision(value: str) -> bool:
     return re.fullmatch(r"[0-9a-f]{40}", value) is not None
+
+
+def encode_varint(value: int) -> bytes:
+    if value < 0:
+        raise ValueError("VarInt values must be non-negative")
+    encoded = bytearray()
+    while value > 0x7F:
+        encoded.append((value & 0x7F) | 0x80)
+        value >>= 7
+    encoded.append(value)
+    return bytes(encoded)
+
+
+def decode_varint(data: bytes, offset: int = 0) -> tuple[int, int]:
+    value = 0
+    for position in range(5):
+        if offset >= len(data):
+            raise ValueError("Truncated VarInt")
+        current = data[offset]
+        offset += 1
+        value |= (current & 0x7F) << (7 * position)
+        if current & 0x80 == 0:
+            return value, offset
+    raise ValueError("VarInt exceeds five bytes")
+
+
+def encode_frame(payload: bytes) -> bytes:
+    return encode_varint(len(payload)) + payload
+
+
+def build_status_handshake(host: str, port: int, protocol: int) -> bytes:
+    if protocol not in SUPPORTED_PROTOCOLS:
+        raise ValueError(f"Supported Java probe protocols are {SUPPORTED_PROTOCOLS[0]}-{SUPPORTED_PROTOCOLS[-1]}")
+    if not 1 <= port <= 65535:
+        raise ValueError("Port must be in the range 1-65535")
+    address = host.encode("utf-8")
+    payload = (encode_varint(0) + encode_varint(protocol) + encode_varint(len(address)) + address
+               + struct.pack(">H", port) + encode_varint(1))
+    return encode_frame(payload)
+
+
+def read_varint(stream: socket.socket) -> int:
+    value = 0
+    for position in range(5):
+        current = stream.recv(1)
+        if not current:
+            raise EOFError("Connection closed while reading packet length")
+        byte = current[0]
+        value |= (byte & 0x7F) << (7 * position)
+        if byte & 0x80 == 0:
+            return value
+    raise ValueError("VarInt exceeds five bytes")
+
+
+def receive_exact(stream: socket.socket, length: int) -> bytes:
+    payload = bytearray()
+    while len(payload) < length:
+        chunk = stream.recv(length - len(payload))
+        if not chunk:
+            raise EOFError("Connection closed before the full packet arrived")
+        payload.extend(chunk)
+    return bytes(payload)
+
+
+def probe_java_status(host: str, port: int, protocol: int, timeout: float,
+                      handshake_host: str | None = None) -> tuple[dict[str, object], float]:
+    if timeout <= 0 or timeout > 60:
+        raise ValueError("Timeout must be greater than 0 and no more than 60 seconds")
+    virtual_host = handshake_host or host
+    started = time.perf_counter()
+    with socket.create_connection((host, port), timeout=timeout) as stream:
+        stream.settimeout(timeout)
+        stream.sendall(build_status_handshake(virtual_host, port, protocol))
+        stream.sendall(encode_frame(encode_varint(0)))
+        packet_length = read_varint(stream)
+        if not 1 <= packet_length <= 1_048_576:
+            raise ValueError(f"Unexpected status packet length: {packet_length}")
+        packet = receive_exact(stream, packet_length)
+
+    packet_id, offset = decode_varint(packet)
+    if packet_id != 0:
+        raise ValueError(f"Expected a status response packet, received id {packet_id}")
+    json_length, offset = decode_varint(packet, offset)
+    json_bytes = packet[offset:]
+    if json_length != len(json_bytes):
+        raise ValueError("Status response JSON length does not match its packet")
+    status = json.loads(json_bytes.decode("utf-8"))
+    if not isinstance(status, dict):
+        raise ValueError("Status response must be a JSON object")
+    return status, (time.perf_counter() - started) * 1000
+
+
+def run_java_probe(args: argparse.Namespace) -> int:
+    try:
+        status, elapsed_ms = probe_java_status(
+            args.host, args.port, args.protocol, args.timeout, args.handshake_host)
+    except (OSError, EOFError, ValueError, json.JSONDecodeError) as exc:
+        print(f"Java status probe failed: {exc}", file=sys.stderr)
+        return 1
+    version = status.get("version")
+    players = status.get("players")
+    if not isinstance(version, dict):
+        version = {}
+    if not isinstance(players, dict):
+        players = {}
+    version_name = version.get("name")
+    version_name = json.dumps(version_name, ensure_ascii=True) if isinstance(version_name, str) else "unknown"
+    server_protocol = version.get("protocol")
+    server_protocol = server_protocol if isinstance(server_protocol, int) else "unknown"
+    print(f"Java status answered in {elapsed_ms:.1f} ms for requested protocol {args.protocol}.")
+    print(f"Server reports version {version_name} (protocol {server_protocol}).")
+    online, maximum = players.get("online"), players.get("max")
+    if type(online) is int and type(maximum) is int:
+        print(f"Players online: {online}/{maximum}.")
+    print("This checks only the unauthenticated Java status handshake, not login, Bedrock, or seamless transfers.")
+    return 0
 
 
 def sha256_file(path: Path) -> str:
@@ -301,10 +422,18 @@ def main() -> int:
     add_jdk_options(test)
     test.add_argument("--velocity-source", help="local Velocity git clone to share as the source object store")
     test.add_argument("--keep-workspace", action="store_true", help="keep the disposable patched gateway checkout")
+    probe = subparsers.add_parser("probe-java", help="probe an unauthenticated Java server-list status response")
+    probe.add_argument("host", help="network host or IP address")
+    probe.add_argument("--port", type=int, default=25565)
+    probe.add_argument("--protocol", type=int, choices=SUPPORTED_PROTOCOLS, default=774)
+    probe.add_argument("--handshake-host", help="virtual host sent in the Minecraft handshake")
+    probe.add_argument("--timeout", type=float, default=4.0)
     args = parser.parse_args()
 
     if args.command == "check":
         return check_environment(args)
+    if args.command == "probe-java":
+        return run_java_probe(args)
     return run_tests(args)
 
 

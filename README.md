@@ -185,6 +185,10 @@ start a server or proxy. It reports test, failure and skip totals for each suite
 `PATH`. Use `--keep-workspace` to retain a failed or successful gateway checkout for debugging;
 `--velocity-source` can reuse a local Velocity clone without modifying it.
 
+`./dev/canopy-dev probe-java <host> --port 25565 --protocol 774` checks a Java server-list status
+handshake, optionally sending a separate virtual host with `--handshake-host`. It does not join,
+authenticate, probe Geyser's Bedrock listener, or establish seamless compatibility.
+
 These commands make the current builds repeatable; they do not certify live transfers or update
 cutovers. Keep the Session Gateway protocol probes and runtime fixtures isolated from production.
 The Canopy APIs and wire formats remain experimental, so a public SDK should wait until those
