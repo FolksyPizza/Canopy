@@ -1454,6 +1454,16 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, 
         .whenComplete((success, error) -> CanopySwitchPolicy.finishRefresh(getUniqueId()));
   }
 
+  private void notifyCanopyDestinationFailure(String failedDestinationName) {
+    if (connection.getActiveSessionHandler() instanceof ClientPlaySessionHandler playHandler) {
+      playHandler.getCanopyHandover().destinationFailed(failedDestinationName);
+    }
+  }
+
+  private void notifyCanopyDestinationFailure(VelocityServerConnection failed) {
+    if (failed != null) notifyCanopyDestinationFailure(failed.getServerInfo().getName());
+  }
+
   private final class ConnectionRequestBuilderImpl implements ConnectionRequestBuilder {
 
     private final RegisteredServer toConnect;
@@ -1520,6 +1530,9 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, 
           }
 
           return con.connect().whenCompleteAsync((result, exception) -> {
+            if (exception != null || (result != null && !result.isSuccessful())) {
+              notifyCanopyDestinationFailure(con);
+            }
             if (result != null && !result.isSuccessful() && !result.isSafe()) {
               handleConnectionException(result.getAttemptedConnection(),
                   // The only way for the reason to be null is if the result is safe
@@ -1548,6 +1561,7 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, 
     public CompletableFuture<Boolean> connectWithIndication() {
       return internalConnect().whenCompleteAsync((status, throwable) -> {
         if (throwable != null) {
+          notifyCanopyDestinationFailure(toConnect.getServerInfo().getName());
           handleConnectionException(toConnect, throwable, true);
           return;
         }
@@ -1556,7 +1570,8 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, 
           case ALREADY_CONNECTED -> sendMessage(ConnectionMessages.ALREADY_CONNECTED);
           case CONNECTION_IN_PROGRESS -> sendMessage(ConnectionMessages.IN_PROGRESS);
           case CONNECTION_CANCELLED -> {
-            // Ignored; the plugin probably already handled this.
+            // A denied seam target must resume the source rather than leave the Bedrock input gate armed.
+            notifyCanopyDestinationFailure(toConnect.getServerInfo().getName());
           }
           case SERVER_DISCONNECTED -> {
             final Component reason = status.getReasonComponent()

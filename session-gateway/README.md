@@ -60,15 +60,14 @@ require a compatible protocol translator and matching effective client configura
 
 These profiles describe Java Edition play packets. Bedrock clients enter through Geyser's UDP listener;
 Geyser's [Velocity setup](https://geysermc.org/wiki/geyser/setup/) says it imitates a Java 26.2 client, while
-[Floodgate](https://geysermc.org/wiki/floodgate/setup/proxy-servers/) supplies Bedrock identity. That makes
-Java protocol coverage necessary, but it does not certify the translated Bedrock path. One isolated synthetic Geyser
-Bedrock 1.26.51 client passed a same-world protocol-776 hold-return cycle described below; no native authenticated
-Bedrock-device or all-version seamless-switch result is claimed. Keep Bedrock on normal switches by default until the
-required client and gameplay matrix passes through the deployed Geyser/Floodgate versions.
+[Floodgate](https://geysermc.org/wiki/floodgate/setup/proxy-servers/) supplies Bedrock identity. An isolated synthetic
+matrix through Geyser/Floodgate passed main-to-hold-to-main switching for Bedrock 1.26.30, 1.26.40, 1.26.45 and
+1.26.51 on translated Java protocol 776, preserving seeded player state and avoiding switch-time reset packets.
+This does not certify an authenticated Bedrock device, every Bedrock version, or production switching.
 The gateway forces an unclassified (`UNKNOWN`) session to NORMAL. Confirmed Bedrock sessions are also forced to
-NORMAL unless both `canopy.allowSeamless=true` and `canopy.experimentalBedrockSeamless=true` are set. Exact input-cut
-handover is restricted to confirmed Java sessions. The flags only open a Bedrock trial; they do not certify Bedrock
-compatibility.
+NORMAL unless both `canopy.allowSeamless=true` and `canopy.experimentalBedrockSeamless=true` are set. Those flags open
+an experimental, bounded Bedrock movement-input buffer for the translated seam path; it is not a complete native
+Bedrock packet cut and does not certify Bedrock compatibility.
 
 ### Maintenance freeze gate
 
@@ -151,11 +150,13 @@ the client chunk view, stages health/XP/slot updates until readiness, and acknow
 load reset. Genuine death and ordinary respawn retain their normal packets. Dead or incomplete snapshots
 are refused; this recovery cannot determine which unfenced legacy snapshot is globally current.
 
-Handoff timeout recovery is incomplete. Some paths leave input held after source-side recovery, and release across all
-gateway/backend cancellation and disconnect paths has not been verified. Managed database sessions add death
-revisions, logout/reconnect fencing and dead-attachment routing for native bed/anchor respawns; they do not yet provide
-a verified recovery guarantee for every interrupted activation. Complete native timer/state restoration also remains
-unfinished. See the root README for opt-in lifecycle configuration.
+Handoff recovery is incomplete. When a requested Bedrock destination fails before PLAY while the source still owns a
+ready connection, the gateway now cancels back to that source and replays the bounded input queue there. If the source
+has already been detached, the queue is retained for ordinary backend failover; it is never replayed to the stale
+source. Failure recovery after arrival, a fallback that never reaches PLAY or never sends readiness, and complete
+native timer/state restoration still lack end-to-end verification. Managed database sessions add death revisions,
+logout/reconnect fencing and dead-attachment routing for native bed/anchor respawns; they do not yet guarantee recovery
+for every interrupted activation. See the root README for opt-in lifecycle configuration.
 
 ## Remaining verification
 

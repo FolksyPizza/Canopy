@@ -358,7 +358,7 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
           if (target != null && !target.equalsIgnoreCase(serverConn.getServerInfo().getName())
               && server.getServer(target).isPresent()) {
             mayPromoteShadow = playerSessionHandler.getCanopyHandover()
-                .beginBedrockMovementBuffer(serverConn);
+                .beginBedrockMovementBuffer(serverConn, target);
           }
         } else if (platform == com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.Platform.JAVA) {
           playerSessionHandler.getCanopyHandover().begin(serverConn);
@@ -625,6 +625,7 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
 
   @Override
   public void disconnected() {
+    playerSessionHandler.getCanopyHandover().destinationFailed(serverConn);
     com.velocitypowered.proxy.connection.client.CanopyLifecycleHooks.audit(serverConn.getPlayer().getUniqueId(), "backend.disconnected",
         "owner", serverConn.getServerInfo().getName(), "reason", serverConn.isGracefulDisconnect() ? "graceful" : "unexpected");
     serverConn.getServer().removePlayer(serverConn.getPlayer());

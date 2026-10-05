@@ -73,7 +73,7 @@ class CanopyHandoverTest {
       ByteBuf unrelated = Unpooled.buffer();
       ProtocolUtils.writeVarInt(unrelated, 0x7f);
       try {
-        assertTrue(handover.beginBedrockMovementBuffer(fixture.source()));
+        assertTrue(handover.beginBedrockMovementBuffer(fixture.source(), "hold"));
         assertTrue(handover.onServerbound(vehicle));
         assertTrue(handover.onServerbound(unrelated));
         assertEquals(0, handover.bufferedInputCount());
@@ -96,7 +96,7 @@ class CanopyHandoverTest {
       ByteBuf first = movement(profile, 0x1d, 11);
       ByteBuf second = movement(profile, 0x20, 22);
       try {
-        assertTrue(handover.beginBedrockMovementBuffer(fixture.source()));
+        assertTrue(handover.beginBedrockMovementBuffer(fixture.source(), "hold"));
         assertTrue(handover.onServerbound(first));
         assertTrue(handover.onServerbound(second));
         assertEquals(2, handover.bufferedInputCount());
@@ -128,6 +128,83 @@ class CanopyHandoverTest {
       } finally {
         first.release();
         second.release();
+      }
+    }
+  }
+
+  @Test
+  void bedrockDestinationFailureCancelsToLiveSourceAndReplaysQueuedInput() throws Exception {
+    UUID id = UUID.randomUUID();
+    try (PropertyRestore ignored = enableBedrockTrial(id)) {
+      Fixture fixture = fixture(id, 776);
+      CanopyHandover handover = new CanopyHandover(fixture.player());
+      ByteBuf first = movement(CanopyProtocolProfile.find(776), 0x1d, 41);
+      ByteBuf second = movement(CanopyProtocolProfile.find(776), 0x20, 42);
+      try {
+        assertTrue(handover.beginBedrockMovementBuffer(fixture.source(), "hold"));
+        assertTrue(handover.onServerbound(first));
+        assertTrue(handover.onServerbound(second));
+
+        assertFalse(handover.destinationFailed("unrelated"));
+        assertTrue(handover.active(), "another failed route must not release this handover");
+        assertTrue(handover.destinationFailed("HOLD"), "the expected destination name is case-insensitive");
+
+        assertFalse(handover.active());
+        assertEquals(0, handover.bufferedInputCount());
+        assertEquals(0, handover.bufferedInputBytes());
+        ArgumentCaptor<Object> replay = ArgumentCaptor.forClass(Object.class);
+        verify(fixture.sourceConnection(), times(2)).delayedWrite(replay.capture());
+        List<ByteBuf> packets = replay.getAllValues().stream().map(ByteBuf.class::cast).toList();
+        try {
+          var profile = CanopyProtocolProfile.find(776);
+          assertEquals(List.of(0x1d, 0x20), packets.stream()
+              .map(packet -> profile.serverbound(ProtocolUtils.readVarInt(packet))).toList());
+          assertEquals(List.of((byte) 41, (byte) 42), packets.stream().map(ByteBuf::readByte).toList());
+        } finally {
+          packets.forEach(ByteBuf::release);
+        }
+        ArgumentCaptor<Object> controls = ArgumentCaptor.forClass(Object.class);
+        verify(fixture.sourceConnection(), times(2)).write(controls.capture());
+        List<Object> writes = controls.getAllValues();
+        try {
+          assertEquals(CanopyHandover.CUT_CHANNEL,
+              ((com.velocitypowered.proxy.protocol.packet.PluginMessagePacket) writes.get(0)).getChannel());
+          assertEquals(CanopyHandover.CANCEL_CHANNEL,
+              ((com.velocitypowered.proxy.protocol.packet.PluginMessagePacket) writes.get(1)).getChannel());
+        } finally {
+          writes.forEach(io.netty.util.ReferenceCountUtil::release);
+        }
+        verify(fixture.destinationConnection(), never()).delayedWrite(any());
+      } finally {
+        first.release();
+        second.release();
+        handover.abandon();
+      }
+    }
+  }
+
+  @Test
+  void bedrockFailureAfterSourceTeardownNeverReplaysToStaleOwner() throws Exception {
+    UUID id = UUID.randomUUID();
+    try (PropertyRestore ignored = enableBedrockTrial(id)) {
+      Fixture fixture = fixture(id, 776);
+      CanopyHandover handover = new CanopyHandover(fixture.player());
+      ByteBuf movement = movement(CanopyProtocolProfile.find(776), 0x1d, 51);
+      try {
+        assertTrue(handover.beginBedrockMovementBuffer(fixture.source(), "hold"));
+        assertTrue(handover.onServerbound(movement));
+        when(fixture.player().getConnectedServer()).thenReturn(fixture.destination());
+        handover.arrived();
+
+        assertFalse(handover.destinationFailed(fixture.destination()));
+
+        assertTrue(handover.active(), "normal backend failover still owns recovery after source teardown");
+        assertEquals(1, handover.bufferedInputCount());
+        verify(fixture.sourceConnection(), never()).delayedWrite(any());
+        verify(fixture.destinationConnection(), never()).delayedWrite(any());
+      } finally {
+        movement.release();
+        handover.abandon();
       }
     }
   }

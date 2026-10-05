@@ -86,6 +86,7 @@ public final class CanopyHandover {
   private long stateSince;
   private long bufferedBytes;
   private VelocityServerConnection source;
+  private String bedrockDestinationName;
   private boolean bedrockInputBuffer;
   private boolean bedrockBufferOverflowed;
   private boolean timeoutReported;
@@ -216,10 +217,12 @@ public final class CanopyHandover {
   }
 
   /** Arm a bounded movement-only queue for an explicitly enabled, positively classified Bedrock seam. */
-  public synchronized boolean beginBedrockMovementBuffer(VelocityServerConnection source) {
+  public synchronized boolean beginBedrockMovementBuffer(VelocityServerConnection source, String destinationName) {
     if (!CanopySwitchPolicy.mayBufferBedrockMovement(player.getUniqueId()) || state != State.IDLE
         || CanopyProtocolProfile.find(player.getProtocolVersion().getProtocol()) == null
-        || source == null || player.getConnectedServer() != source) {
+        || source == null || destinationName == null || destinationName.isBlank()
+        || source.getServerInfo().getName().equalsIgnoreCase(destinationName)
+        || player.getConnectedServer() != source) {
       return false;
     }
     MinecraftConnection smc = source.getConnection();
@@ -227,12 +230,36 @@ public final class CanopyHandover {
       return false;
     }
     this.source = source;
+    this.bedrockDestinationName = destinationName;
     this.state = State.CUT;
     this.stateSince = System.currentTimeMillis();
     this.bedrockInputBuffer = true;
     audit("input.bedrock_buffer_armed");
     smc.write(new PluginMessagePacket(CUT_CHANNEL, Unpooled.EMPTY_BUFFER));
     return true;
+  }
+
+  /**
+   * A requested destination failed before readiness. Cancel only while the original source still owns a live PLAY
+   * connection; after source teardown, ordinary failover must decide the next owner instead of replaying stale input.
+   */
+  public synchronized boolean destinationFailed(VelocityServerConnection failed) {
+    return failed != null && destinationFailed(failed.getServerInfo().getName());
+  }
+
+  public synchronized boolean destinationFailed(String failedDestinationName) {
+    if (!bedrockInputBuffer || state == State.IDLE || failedDestinationName == null
+        || bedrockDestinationName == null
+        || !bedrockDestinationName.equalsIgnoreCase(failedDestinationName)) {
+      return false;
+    }
+    if (state == State.CUT && player.getConnectedServer() == source && backendPlayReady(source)) {
+      audit("input.destination_failed_cancelled");
+      cancel();
+      return true;
+    }
+    audit("input.destination_failed_failover_pending");
+    return false;
   }
 
   /** A durable dead session has no gameplay input to cut; CSG routes its actual respawn request. */
@@ -494,6 +521,7 @@ public final class CanopyHandover {
     timeoutReported = false; bufferOverflowReported = false;
     arrivalRepairAllowed = false;
     bedrockInputBuffer = false;
+    bedrockDestinationName = null;
     bedrockBufferOverflowed = false;
     bufferedBytes = 0;
     source = null;

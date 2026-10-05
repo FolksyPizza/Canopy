@@ -55,7 +55,7 @@ class ClientPlaySessionHandlerBedrockHandoverTest {
       CanopyHandover handover = fixture.handler().getCanopyHandover();
       ByteBuf movement = movement(776, 0x1d, 73);
       try {
-        assertTrue(handover.beginBedrockMovementBuffer(fixture.source()));
+        assertTrue(handover.beginBedrockMovementBuffer(fixture.source(), "hold"));
         when(fixture.player().getConnectedServer()).thenReturn(null);
 
         fixture.handler().handleUnknown(movement);
@@ -81,7 +81,7 @@ class ClientPlaySessionHandlerBedrockHandoverTest {
       ProtocolUtils.writeVarInt(prefix, CanopyProtocolProfile.find(776).serverboundWire(0x1d));
       prefix.writeZero(CanopyHandover.MAX_BUFFERED_BYTES - prefix.readableBytes());
       try {
-        assertTrue(handover.beginBedrockMovementBuffer(fixture.source()));
+        assertTrue(handover.beginBedrockMovementBuffer(fixture.source(), "hold"));
         fixture.handler().handleUnknown(prefix);
         assertEquals(1, handover.bufferedInputCount());
         assertEquals(CanopyHandover.MAX_BUFFERED_BYTES, handover.bufferedInputBytes());
@@ -122,7 +122,7 @@ class ClientPlaySessionHandlerBedrockHandoverTest {
       CanopyHandover handover = fixture.handler().getCanopyHandover();
       ByteBuf movement = movement(776, 0x1d, 23);
       try {
-        assertTrue(handover.beginBedrockMovementBuffer(fixture.source()));
+        assertTrue(handover.beginBedrockMovementBuffer(fixture.source(), "hold"));
         for (int index = 0; index < CanopyHandover.MAX_BUFFERED; index++) {
           fixture.handler().handleUnknown(movement);
         }
@@ -151,7 +151,7 @@ class ClientPlaySessionHandlerBedrockHandoverTest {
       CanopyHandover handover = fixture.handler().getCanopyHandover();
       ByteBuf movement = movement(776, 0x1d, 19);
       try {
-        assertTrue(handover.beginBedrockMovementBuffer(fixture.source()));
+        assertTrue(handover.beginBedrockMovementBuffer(fixture.source(), "hold"));
         fixture.handler().handleUnknown(movement);
         assertEquals(1, handover.bufferedInputCount());
 
@@ -176,7 +176,7 @@ class ClientPlaySessionHandlerBedrockHandoverTest {
       ByteBuf first = movement(776, 0x1d, 20);
       ByteBuf afterTimeout = movement(776, 0x20, 21);
       try {
-        assertTrue(handover.beginBedrockMovementBuffer(fixture.source()));
+        assertTrue(handover.beginBedrockMovementBuffer(fixture.source(), "hold"));
         fixture.handler().handleUnknown(first);
 
         Field stateSince = CanopyHandover.class.getDeclaredField("stateSince");
