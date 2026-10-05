@@ -189,6 +189,10 @@ start a server or proxy. It reports test, failure and skip totals for each suite
 handshake, optionally sending a separate virtual host with `--handshake-host`. It does not join,
 authenticate, probe Geyser's Bedrock listener, or establish seamless compatibility.
 
+`./dev/canopy-dev probe-bedrock <host> --port 19132` checks for a Bedrock RakNet status response.
+It reports the advertised protocol, version, and player counts, while omitting the message of the
+day and server identifier. It does not authenticate, log in, or test seamless switching.
+
 `./dev/canopy-dev audit-summary <path-to-events.jsonl>` prints event counts and malformed-record
 counts from a local Canopy audit journal. It omits record fields, including player and session IDs,
 coordinates, and request data; keep the source journal private.

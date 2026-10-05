@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shlex
 import shutil
 import socket
@@ -26,6 +27,8 @@ GATEWAY = ROOT / "session-gateway"
 GATEWAY_PATCH = GATEWAY / "canopy-session-gateway.patch"
 VELOCITY_URL = "https://github.com/PaperMC/Velocity.git"
 SUPPORTED_PROTOCOLS = tuple(range(771, 778))
+RAKNET_MAGIC = bytes.fromhex("00ffff00fefefefefdfdfdfd12345678")
+MAX_BEDROCK_STATUS_BYTES = 4096
 
 
 def java_major_from_text(output: str) -> int | None:
@@ -154,6 +157,108 @@ def run_java_probe(args: argparse.Namespace) -> int:
     if type(online) is int and type(maximum) is int:
         print(f"Players online: {online}/{maximum}.")
     print("This checks only the unauthenticated Java status handshake, not login, Bedrock, or seamless transfers.")
+    return 0
+
+
+def build_bedrock_ping(timestamp: int, client_guid: int) -> bytes:
+    if not 0 <= timestamp < 1 << 64 or not 0 <= client_guid < 1 << 64:
+        raise ValueError("RakNet ping timestamp and client GUID must fit unsigned 64-bit values")
+    return b"\x01" + struct.pack(">Q", timestamp) + RAKNET_MAGIC + struct.pack(">Q", client_guid)
+
+
+def parse_bedrock_pong(packet: bytes, expected_timestamp: int) -> dict[str, object]:
+    minimum = 1 + 8 + 8 + len(RAKNET_MAGIC) + 2
+    if len(packet) < minimum or len(packet) > MAX_BEDROCK_STATUS_BYTES + minimum:
+        raise ValueError("Unexpected RakNet pong size")
+    if packet[0] != 0x1C:
+        raise ValueError("Expected a RakNet unconnected pong")
+    timestamp = struct.unpack_from(">Q", packet, 1)[0]
+    if timestamp != expected_timestamp:
+        raise ValueError("RakNet pong did not match this probe")
+    magic_start = 1 + 8 + 8
+    if packet[magic_start:magic_start + len(RAKNET_MAGIC)] != RAKNET_MAGIC:
+        raise ValueError("RakNet pong has invalid offline-message magic")
+    status_length_offset = magic_start + len(RAKNET_MAGIC)
+    status_length = struct.unpack_from(">H", packet, status_length_offset)[0]
+    status_start = status_length_offset + 2
+    if status_length != len(packet) - status_start:
+        raise ValueError("RakNet pong status length does not match its packet")
+    fields = packet[status_start:].decode("utf-8", errors="strict").split(";")
+    is_bedrock = bool(fields and fields[0] == "MCPE")
+
+    def integer_field(index: int) -> int | None:
+        if not is_bedrock or len(fields) <= index:
+            return None
+        try:
+            value = int(fields[index])
+        except ValueError:
+            return None
+        return value if value >= 0 else None
+
+    version = fields[3][:128] if is_bedrock and len(fields) > 3 else None
+    return {
+        "is_bedrock": is_bedrock,
+        "version": version,
+        "protocol": integer_field(2),
+        "online": integer_field(4),
+        "maximum": integer_field(5),
+    }
+
+
+def probe_bedrock_status(host: str, port: int, timeout: float) -> tuple[dict[str, object], float]:
+    if not host:
+        raise ValueError("Host must not be empty")
+    if not 1 <= port <= 65535:
+        raise ValueError("Port must be in the range 1-65535")
+    if timeout <= 0 or timeout > 60:
+        raise ValueError("Timeout must be greater than 0 and no more than 60 seconds")
+
+    addresses = socket.getaddrinfo(host, port, type=socket.SOCK_DGRAM)
+    if not addresses:
+        raise OSError("Host resolved to no UDP addresses")
+    timestamp = int(time.time() * 1000) & ((1 << 64) - 1)
+    ping = build_bedrock_ping(timestamp, secrets.randbits(64))
+    deadline = time.monotonic() + timeout
+    started = time.perf_counter()
+    last_error: OSError | ValueError | None = None
+    for family, socktype, protocol, _canonical_name, address in addresses:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            with socket.socket(family, socktype, protocol) as stream:
+                stream.settimeout(remaining)
+                stream.connect(address)
+                stream.sendall(ping)
+                pong = stream.recv(MAX_BEDROCK_STATUS_BYTES + 64)
+            status = parse_bedrock_pong(pong, timestamp)
+            return status, (time.perf_counter() - started) * 1000
+        except (OSError, ValueError) as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise TimeoutError("No RakNet pong received before the timeout")
+
+
+def run_bedrock_probe(args: argparse.Namespace) -> int:
+    try:
+        status, elapsed_ms = probe_bedrock_status(args.host, args.port, args.timeout)
+    except (OSError, UnicodeError, ValueError) as exc:
+        print(f"Bedrock status probe failed ({type(exc).__name__}).", file=sys.stderr)
+        return 1
+    print(f"RakNet listener answered in {elapsed_ms:.1f} ms.")
+    if not status["is_bedrock"]:
+        print("The RakNet response did not contain a recognized Bedrock advertisement.")
+    else:
+        protocol = status["protocol"]
+        print(f"Bedrock advertisement found; protocol {protocol if isinstance(protocol, int) else 'unknown'}.")
+        version = status["version"]
+        if isinstance(version, str) and version:
+            print(f"Advertised Bedrock version: {json.dumps(version, ensure_ascii=True)}.")
+        online, maximum = status["online"], status["maximum"]
+        if isinstance(online, int) and isinstance(maximum, int):
+            print(f"Players advertised: {online}/{maximum}.")
+    print("This checks only UDP RakNet status reachability, not authentication, login, or seamless transfers.")
     return 0
 
 
@@ -472,6 +577,10 @@ def main() -> int:
     probe.add_argument("--protocol", type=int, choices=SUPPORTED_PROTOCOLS, default=774)
     probe.add_argument("--handshake-host", help="virtual host sent in the Minecraft handshake")
     probe.add_argument("--timeout", type=float, default=4.0)
+    bedrock = subparsers.add_parser("probe-bedrock", help="probe an unauthenticated Bedrock RakNet status response")
+    bedrock.add_argument("host", help="network host or IP address")
+    bedrock.add_argument("--port", type=int, default=19132)
+    bedrock.add_argument("--timeout", type=float, default=4.0)
     audit = subparsers.add_parser("audit-summary", help="summarize a local Canopy JSONL audit without exposing record fields")
     audit.add_argument("file", type=Path, help="path to an audit/events.jsonl file")
     args = parser.parse_args()
@@ -480,6 +589,8 @@ def main() -> int:
         return check_environment(args)
     if args.command == "probe-java":
         return run_java_probe(args)
+    if args.command == "probe-bedrock":
+        return run_bedrock_probe(args)
     if args.command == "audit-summary":
         return run_audit_summary(args)
     return run_tests(args)

@@ -2,11 +2,16 @@ import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 import json
+import socket
+import struct
+import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from argparse import Namespace
 
 from canopy_dev import (
+    RAKNET_MAGIC,
+    build_bedrock_ping,
     build_status_handshake,
     decode_varint,
     encode_varint,
@@ -14,6 +19,8 @@ from canopy_dev import (
     java_major_from_text,
     junit_summary,
     probe_java_status,
+    parse_bedrock_pong,
+    run_bedrock_probe,
     run_audit_summary,
     summarize_audit,
 )
@@ -58,9 +65,6 @@ class CanopyDevParsingTest(unittest.TestCase):
         self.assertEqual(774, protocol)
 
     def test_status_probe_parses_loopback_response(self):
-        import socket
-        import threading
-
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         listener.bind((socket.gethostbyname("localhost"), 0))
         listener.listen(1)
@@ -111,6 +115,61 @@ class CanopyDevParsingTest(unittest.TestCase):
             self.assertIn("session.transfer: 2", output.getvalue())
             self.assertNotIn("private-player-id", output.getvalue())
             self.assertNotIn("12345", output.getvalue())
+
+    def test_bedrock_probe_parses_loopback_raknet_advertisement_safely(self):
+        listener = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+        received = []
+
+        def respond():
+            with listener:
+                ping, address = listener.recvfrom(1024)
+                received.append(ping)
+                timestamp = struct.unpack_from(">Q", ping, 1)[0]
+                advertisement = (
+                    "MCPE;PRIVATE_MOTD;900;1.26.5;7;40;private-server-id;sub;Survival;1;19132;19133"
+                ).encode("utf-8")
+                pong = (b"\x1c" + struct.pack(">Q", timestamp) + struct.pack(">Q", 42)
+                        + RAKNET_MAGIC + struct.pack(">H", len(advertisement)) + advertisement)
+                listener.sendto(pong, address)
+
+        server = threading.Thread(target=respond, daemon=True)
+        server.start()
+        output = StringIO()
+        with redirect_stdout(output):
+            result = run_bedrock_probe(Namespace(host="127.0.0.1", port=port, timeout=2.0))
+        server.join(timeout=2.0)
+
+        self.assertEqual(0, result)
+        self.assertEqual(1, len(received))
+        self.assertEqual(33, len(received[0]))
+        self.assertEqual(0x01, received[0][0])
+        self.assertIn("Bedrock advertisement found; protocol 900", output.getvalue())
+        self.assertIn('Advertised Bedrock version: "1.26.5"', output.getvalue())
+        self.assertIn("Players advertised: 7/40", output.getvalue())
+        self.assertNotIn("PRIVATE_MOTD", output.getvalue())
+        self.assertNotIn("private-server-id", output.getvalue())
+
+    def test_bedrock_pong_must_match_request_and_raknet_magic(self):
+        timestamp = 123456
+        advertisement = b"MCPE;Test;900;1.26.5;0;20"
+        pong = (b"\x1c" + struct.pack(">Q", timestamp) + struct.pack(">Q", 42)
+                + RAKNET_MAGIC + struct.pack(">H", len(advertisement)) + advertisement)
+        self.assertTrue(parse_bedrock_pong(pong, timestamp)["is_bedrock"])
+        with self.assertRaises(ValueError):
+            parse_bedrock_pong(pong, timestamp + 1)
+        with self.assertRaises(ValueError):
+            parse_bedrock_pong(pong[:17] + b"x" + pong[18:], timestamp)
+
+    def test_bedrock_ping_has_the_raknet_unconnected_ping_layout(self):
+        timestamp, client_guid = 123456, 789
+        packet = build_bedrock_ping(timestamp, client_guid)
+        self.assertEqual(33, len(packet))
+        self.assertEqual(0x01, packet[0])
+        self.assertEqual(timestamp, struct.unpack_from(">Q", packet, 1)[0])
+        self.assertEqual(RAKNET_MAGIC, packet[9:25])
+        self.assertEqual(client_guid, struct.unpack_from(">Q", packet, 25)[0])
 
 
 if __name__ == "__main__":
