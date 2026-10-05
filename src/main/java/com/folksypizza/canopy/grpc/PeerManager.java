@@ -7,6 +7,7 @@ import com.folksypizza.canopy.proto.ShardHealth;
 import com.folksypizza.canopy.proto.ShardHealthQuery;
 import com.folksypizza.canopy.registry.ShardRegistry;
 import com.folksypizza.canopy.transfer.TileTransferService;
+import com.folksypizza.canopy.halo.PendingHaloEdits;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import org.slf4j.Logger;
@@ -27,7 +28,7 @@ import java.util.concurrent.TimeUnit;
  * on a fixed cadence. This is what turns a set of independent shards into a
  * coordinating cluster.
  */
-public class PeerManager {
+public class PeerManager implements org.bukkit.event.Listener {
     private static final Logger log = LoggerFactory.getLogger(PeerManager.class);
     private static final long POLL_INTERVAL_SEC = 5;
     private static final long RPC_DEADLINE_SEC = 3;
@@ -43,6 +44,7 @@ public class PeerManager {
     private final boolean ownsWest;
     // Per-peer high-water seq for halo edits already applied.
     private final ConcurrentHashMap<String, Long> haloLastSeq = new ConcurrentHashMap<>();
+    private final PendingHaloEdits pendingHaloEdits = new PendingHaloEdits(16_384);
     // Latest world time reported by each peer (peer shard id -> full time), for time sync.
     private final ConcurrentHashMap<Long, Long> peerWorldTimes = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Long, Integer> peerWeather = new ConcurrentHashMap<>();
@@ -155,37 +157,67 @@ public class PeerManager {
             var resp = stub.getHaloEdits(com.folksypizza.canopy.proto.HaloEditsQuery.newBuilder()
                 .setMinX(minX).setMaxX(maxX).setSinceSeq(since).build());
             if (resp.getEditsCount() == 0) return;
+            if (!applyHaloEdits(resp.getEditsList())) {
+                // Keep the sequence cursor unchanged so the source can retry after pending chunks load.
+                log.warn("[halo] pending edit buffer is full; retaining cursor for {} edits from {}",
+                    resp.getEditsCount(), addr);
+                return;
+            }
             haloLastSeq.put(addr, resp.getMaxSeq());
-            applyHaloEdits(resp.getEditsList());
-            log.info("[halo] mirrored {} edits from peer strip [{}..{}]", resp.getEditsCount(), minX, maxX);
+            log.debug("[halo] queued {} edits from peer strip [{}..{}]", resp.getEditsCount(), minX, maxX);
         } catch (Exception e) {
             log.warn("[halo] pull from {} failed: {}", addr, e.getMessage());
         }
     }
 
-    private void applyHaloEdits(java.util.List<com.folksypizza.canopy.proto.BlockEdit> edits) {
-        if (plugin.getServer().getWorlds().isEmpty()) return;
+    private boolean applyHaloEdits(java.util.List<com.folksypizza.canopy.proto.BlockEdit> edits) {
+        if (plugin.getServer().getWorlds().isEmpty()) return false;
         org.bukkit.World world = plugin.getServer().getWorlds().get(0);
-        // Group by chunk to schedule one region task per chunk.
-        java.util.Map<Long, java.util.List<com.folksypizza.canopy.proto.BlockEdit>> byChunk = new java.util.HashMap<>();
+        java.util.Set<Long> touchedChunks = new java.util.HashSet<>();
+        boolean accepted = true;
         for (var e : edits) {
-            long key = (((long) (e.getX() >> 4)) << 32) | ((e.getZ() >> 4) & 0xffffffffL);
-            byChunk.computeIfAbsent(key, k -> new java.util.ArrayList<>()).add(e);
+            if (!pendingHaloEdits.offer(new PendingHaloEdits.Edit(
+                e.getSeq(), e.getX(), e.getY(), e.getZ(), e.getData()))) {
+                accepted = false;
+                break;
+            }
+            touchedChunks.add(PendingHaloEdits.chunkKey(e.getX() >> 4, e.getZ() >> 4));
         }
-        for (var entry : byChunk.entrySet()) {
-            int cx = (int) (entry.getKey() >> 32);
-            int cz = (int) (long) entry.getKey();
-            var chunkEdits = entry.getValue();
-            plugin.getServer().getRegionScheduler().run(plugin, world, cx, cz, task -> {
-                for (var e : chunkEdits) {
-                    try {
-                        org.bukkit.block.data.BlockData bd = org.bukkit.Bukkit.createBlockData(e.getData());
-                        world.getBlockAt(e.getX(), e.getY(), e.getZ()).setBlockData(bd, false);
-                    } catch (Exception ex) {
-                        // skip malformed block data
-                    }
-                }
-            });
+        for (long key : touchedChunks) {
+            scheduleHaloApply(world, (int) (key >> 32), (int) key);
+        }
+        return accepted;
+    }
+
+    private void scheduleHaloApply(org.bukkit.World world, int chunkX, int chunkZ) {
+        plugin.getServer().getRegionScheduler().run(plugin, world, chunkX, chunkZ,
+            task -> applyPendingHaloEdits(world, chunkX, chunkZ));
+    }
+
+    private void applyPendingHaloEdits(org.bukkit.World world, int chunkX, int chunkZ) {
+        // RegionScheduler guarantees the owner thread, but the chunk may still be generating or
+        // may have unloaded before this task ran. Leave the edits queued for its next load event.
+        if (!world.isChunkLoaded(chunkX, chunkZ)) return;
+        var edits = pendingHaloEdits.drain(chunkX, chunkZ);
+        if (edits.isEmpty()) return;
+        org.bukkit.Chunk chunk = world.getChunkAt(chunkX, chunkZ);
+        for (var edit : edits) {
+            try {
+                org.bukkit.block.data.BlockData data = org.bukkit.Bukkit.createBlockData(edit.data());
+                chunk.getBlock(edit.x() & 15, edit.y(), edit.z() & 15).setBlockData(data, false);
+            } catch (Exception ex) {
+                log.debug("Skipping invalid halo edit at {},{},{}: {}",
+                    edit.x(), edit.y(), edit.z(), ex.getMessage());
+            }
+        }
+    }
+
+    @org.bukkit.event.EventHandler(priority = org.bukkit.event.EventPriority.MONITOR)
+    public void onChunkLoad(org.bukkit.event.world.ChunkLoadEvent event) {
+        int chunkX = event.getChunk().getX();
+        int chunkZ = event.getChunk().getZ();
+        if (pendingHaloEdits.hasChunk(chunkX, chunkZ)) {
+            scheduleHaloApply(event.getWorld(), chunkX, chunkZ);
         }
     }
 
@@ -195,6 +227,7 @@ public class PeerManager {
             return;
         }
         running = true;
+        plugin.getServer().getPluginManager().registerEvents(this, plugin);
         for (String address : peerAddresses) {
             String addr = address.trim();
             if (addr.isEmpty()) continue;
