@@ -125,6 +125,11 @@ telemetry:
 # Logging
 log-level: INFO
 
+# Must exactly match the world ID bound into Paper's world-authority startup gate.
+# An empty value intentionally keeps the server closed until durable initial ownership is configured.
+world-authority:
+  world-id: ""
+
 # CSG-owned presence and database state. Every managed shard shares this database and secret.
 # Match shard to its gateway server name. The control endpoint is independent of player sockets.
 # HTTP must stay on a trusted private network or behind TLS; do not expose it publicly.

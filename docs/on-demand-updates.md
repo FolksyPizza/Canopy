@@ -54,18 +54,64 @@ An isolated Vanilla fixture controller has exercised the gateway's `/canopyfreez
 but that controller does not call `ZeroDowntimeUpdateCoordinator` or provide complete-world replay. A synthetic
 Bedrock protocol-776 session stayed connected through backend stop/copy/start, return, chat and movement. A second run
 forced candidate plugin readiness to fail; the controller started the rollback build and returned the same held session.
-Neither run emitted additional Bedrock `start_game`, respawn, dimension-change or transfer packets. This verifies one
-Geyser-translated protocol path and two isolated recovery outcomes; it does not verify authenticated devices, every
-protocol, production parity or a continuously replicated world.
+Neither run emitted additional Bedrock `start_game`, respawn, dimension-change or transfer packets. Three isolated
+synthetic protocol-776 runs passed both backend-switch directions. This verifies one Geyser-translated protocol path
+and isolated recovery outcomes; it does not verify authenticated devices, every protocol, production parity or a
+continuously replicated world.
 
 The coordinator capability values are evidence required for promotion; no runtime provider produces or independently
 verifies them yet. Player snapshots alone cannot satisfy those gates, and shadow chunk streaming is not a world journal.
 Canopy therefore has no generic end-to-end update system.
 
+On 2026-10-05, the latest local `mvn -q test` run passed 83 tests with zero failures. With no JDBC test database
+attached to that run, 26 database-gated tests were skipped (23 unrelated tests and the three world-update store
+integration tests). An earlier same-day run against disposable loopback MariaDB enabled all three world-update store
+integration tests, including injected SQL-failure rollback and a lost commit acknowledgment followed by an idempotent
+retry that preserved the fenced epoch. A recovery retry now rechecks that the durable world owner, epoch and, after
+promotion, deployment ID still match the recorded recovery path; focused coordinator tests and the full suite pass.
+This qualifies coordinator and database transaction behavior only; it does not qualify a Paper authority fence or an
+end-to-end update.
+
+A separate Paper 1.21.11 candidate now adds a `WorldAuthorityGate` and wraps main-thread task polling and each server
+tick in admission leases. Its five focused unit tests, Paper compilation, `NormalTestSuite`, and bundled-server build
+passed. An isolated runtime probe also observed the gate drain active work, hold the tick count steady for 1.5 seconds,
+and resume ticking. Startup now requires explicit instance, epoch and mode values; an isolated boot without them failed
+before opening its listener. Explicit standby mode held ticks until the probe supplied a matching synthetic activation
+proof. The proof was not read from the durable authority store, so this does not verify actual ownership. This is a
+narrow main-loop prototype: it does not fence asynchronous world mutations, chunk or save completion, player data or
+plugin side effects; it is not connected to Canopy's coordinator and is not deployed. It does not provide a checkpoint,
+mutation journal, replay, standby catch-up or an end-to-end update path.
+
 The next implementation work is to connect trusted providers for the checkpoint, journal, replay and world authority
 fence, then integrate the controller with the coordinator and gateway sessions. Promotion must remain unavailable until
 the source process can prove it has stopped writing and the standby has applied the exact final watermark. The tested
 held restart is an isolated adapter path, not the generic coordinator's promotion flow.
+
+## Pinned Paper engine fence audit
+
+A Paper 1.21.11 build 132 artifact was checksum-verified against official build metadata; its source commit is
+[`c5eb0790f199da6c38d0a650e1e5cd5415b28185`](https://github.com/PaperMC/Paper/commit/c5eb0790f199da6c38d0a650e1e5cd5415b28185).
+The source was inspected and prototyped in a separate candidate; no Paper change was deployed.
+
+A reliable authority barrier cannot gate only `MinecraftServer.tickServer()`. The main loop also dispatches queued work
+before and after ticks and polls tasks while waiting between ticks. Work queued before a fence must be checked again
+when it executes. A barrier must stop world and plugin tick callbacks, then cover direct NMS mutation paths for blocks,
+fluids, entities, chunks, players and world metadata. Chunk generation and I/O callbacks need epoch checks when their
+results commit, and in-flight work must drain before ownership changes. Relevant source patches include
+[`MinecraftServer`](https://github.com/PaperMC/Paper/blob/c5eb0790f199da6c38d0a650e1e5cd5415b28185/paper-server/patches/sources/net/minecraft/server/MinecraftServer.java.patch),
+[`ServerLevel`](https://github.com/PaperMC/Paper/blob/c5eb0790f199da6c38d0a650e1e5cd5415b28185/paper-server/patches/sources/net/minecraft/server/level/ServerLevel.java.patch),
+[`ServerChunkCache`](https://github.com/PaperMC/Paper/blob/c5eb0790f199da6c38d0a650e1e5cd5415b28185/paper-server/patches/sources/net/minecraft/server/level/ServerChunkCache.java.patch),
+and [`ChunkMap`](https://github.com/PaperMC/Paper/blob/c5eb0790f199da6c38d0a650e1e5cd5415b28185/paper-server/patches/sources/net/minecraft/server/level/ChunkMap.java.patch).
+
+Persistence also needs fencing: chunk and level saves, player data, world metadata, autosave and asynchronous chunk-save
+completion must all remain under the current authority epoch. The server must stop new writes and await already-started
+writes before the durable owner changes. Folia needs a separate barrier across every active region, its global-region
+tick, region/entity task queues and chunk/I/O completions; Paper's single-thread barrier cannot be reused as proof.
+
+These engine boundaries provide quiescence and stale-writer prevention, not standby catch-up. Keeping the source live
+while a second server catches up still requires a crash-consistent checkpoint and a complete ordered mutation journal
+with replay. The pinned source audit therefore confirms the missing engine work; it does not qualify the current update
+coordinator or make promotion available.
 
 ## Replacing the gateway process
 

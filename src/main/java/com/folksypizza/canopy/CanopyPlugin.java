@@ -25,8 +25,13 @@ import com.folksypizza.canopy.scheduler.BlockUpdateHook;
 import com.folksypizza.canopy.scheduler.FoliaTickHook;
 import com.folksypizza.canopy.scheduler.MigrationScheduler;
 import com.folksypizza.canopy.transfer.TileTransferService;
+import com.folksypizza.canopy.update.JdbcWorldUpdateStore;
+import com.folksypizza.canopy.update.WorldAuthorityBootstrap;
 import com.folksypizza.canopy.world.WorldEventListener;
 import com.folksypizza.canopy.world.WorldPartitionAdapter;
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
+import io.papermc.paper.update.WorldAuthorityControl;
 import io.lettuce.core.RedisClient;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.slf4j.Logger;
@@ -93,6 +98,8 @@ public class CanopyPlugin extends JavaPlugin {
     private RedisPeerService redisPeerService;
 
     private long shardId;
+    private WorldAuthorityControl.AuthorityProof startupAuthorityProof;
+    private WorldAuthorityBootstrap.Result worldAuthorityBootstrap;
     private com.folksypizza.canopy.session.runtime.SessionRuntime sessionRuntime;
     private com.folksypizza.canopy.routing.PlayerRespawnRepair respawnRepair;
     public com.folksypizza.canopy.session.runtime.SessionRuntime getSessionRuntime() { return sessionRuntime; }
@@ -110,6 +117,17 @@ public class CanopyPlugin extends JavaPlugin {
 
         saveDefaultConfig();
         createConfigDirectory();
+
+        try {
+            requireWorldAuthorityApi();
+            startupAuthorityProof = prepareWorldAuthority();
+        } catch (Exception | LinkageError failure) {
+            enabled.set(false);
+            log.error("Canopy world-authority bootstrap failed; Paper remains closed ({})",
+                failure.getClass().getSimpleName());
+            throw new IllegalStateException("Canopy world-authority bootstrap failed; Paper remains closed");
+        }
+
         // Before any gRPC channel or server exists.
         com.folksypizza.canopy.grpc.SharedSecret.install(
             new com.folksypizza.canopy.grpc.SharedSecret(getConfig().getString("grpc.shared-secret", "")));
@@ -135,8 +153,60 @@ public class CanopyPlugin extends JavaPlugin {
             return;
         }
 
+        try {
+            worldAuthorityBootstrap = openWorldAuthority(startupAuthorityProof);
+        } catch (Exception | LinkageError failure) {
+            enabled.set(false);
+            gracefulShutdown();
+            log.error("Canopy world-authority activation failed; Paper remains closed ({})",
+                failure.getClass().getSimpleName());
+            throw new IllegalStateException("Canopy world-authority activation failed; Paper remains closed");
+        }
+
         long elapsed = System.currentTimeMillis() - start;
         log.info("Canopy enabled in {}ms", elapsed);
+    }
+
+    /** Check bridge presence and durable ownership before starting any Canopy service. */
+    private void requireWorldAuthorityApi() throws ReflectiveOperationException {
+        getServer().getClass().getMethod("openWorldAuthorityControl", int.class,
+            WorldAuthorityControl.AuthorityProof.class);
+    }
+
+    private WorldAuthorityControl.AuthorityProof prepareWorldAuthority() throws Exception {
+        String worldId = getConfig().getString("world-authority.world-id", "");
+        try (HikariDataSource database = createWorldUpdateDataSource()) {
+            JdbcWorldUpdateStore store = new JdbcWorldUpdateStore(database);
+            store.initialize();
+            return WorldAuthorityBootstrap.prepare(worldId, store);
+        }
+    }
+
+    private WorldAuthorityBootstrap.Result openWorldAuthority(
+            WorldAuthorityControl.AuthorityProof proof) throws Exception {
+        String worldId = getConfig().getString("world-authority.world-id", "");
+        try (HikariDataSource database = createWorldUpdateDataSource()) {
+            JdbcWorldUpdateStore store = new JdbcWorldUpdateStore(database);
+            store.initialize();
+            return WorldAuthorityBootstrap.open(worldId, proof,
+                candidate -> getServer().openWorldAuthorityControl(WorldAuthorityControl.API_VERSION, candidate), store);
+        }
+    }
+
+    private HikariDataSource createWorldUpdateDataSource() {
+        HikariConfig databaseConfig = new HikariConfig();
+        databaseConfig.setDriverClassName("org.mariadb.jdbc.Driver");
+        databaseConfig.setJdbcUrl(getConfig().getString("session.database.url", ""));
+        databaseConfig.setUsername(getConfig().getString("session.database.user", ""));
+        databaseConfig.setPassword(getConfig().getString("session.database.password", ""));
+        databaseConfig.setMaximumPoolSize(1);
+        databaseConfig.setMinimumIdle(0);
+        databaseConfig.setConnectionTimeout(2_000);
+        databaseConfig.setValidationTimeout(1_000);
+        databaseConfig.setInitializationFailTimeout(1);
+        databaseConfig.addDataSourceProperty("connectTimeout", "2000");
+        databaseConfig.addDataSourceProperty("socketTimeout", "4000");
+        return new HikariDataSource(databaseConfig);
     }
 
     @Override
