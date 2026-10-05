@@ -4,11 +4,15 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.mariadb.jdbc.MariaDbDataSource;
 
+import javax.sql.DataSource;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -43,20 +47,44 @@ class JdbcWorldUpdateStoreIntegrationTest {
         UUID firstId = UUID.randomUUID();
         WorldUpdateState preparing = preparing(firstId, world, "target-a");
         assertTrue(store.beginIfAuthority(preparing));
+        assertEquals(preparing, store.findActiveUpdate(world).orElseThrow());
+        assertTrue(store.findActiveUpdate("unreserved-" + world).isEmpty());
         assertFalse(store.beginIfAuthority(preparing(UUID.randomUUID(), world, "target-b")));
         assertEquals(preparing, store.findUpdate(firstId).orElseThrow());
 
-        WorldUpdateState recovering = copy(preparing, Phase.RECOVERING, 2, null,
-            -1, -1, Set.of(), RecoveryMode.SOURCE_BEFORE_FENCE);
-        assertTrue(store.compareAndSet(preparing.revision(), recovering));
-        WorldUpdateState aborted = copy(recovering, Phase.ABORTED, 3, null,
+        JdbcWorldUpdateStore restartedStore = new JdbcWorldUpdateStore(dataSource);
+        WorldUpdateState discovered = restartedStore.findActiveUpdate(world).orElseThrow();
+        assertEquals(firstId, discovered.deploymentId());
+        assertEquals(preparing, discovered);
+        WorldUpdateState recovered = new ZeroDowntimeUpdateCoordinator(restartedStore).recover(discovered.deploymentId());
+        assertEquals(firstId, recovered.deploymentId());
+        assertEquals(Phase.RECOVERING, recovered.phase());
+        assertEquals(RecoveryMode.SOURCE_BEFORE_FENCE, recovered.recoveryMode());
+
+        WorldUpdateState aborted = copy(recovered, Phase.ABORTED, recovered.revision() + 1, null,
             -1, -1, Set.of(), null);
-        assertTrue(store.compareAndSet(recovering.revision(), aborted));
+        assertTrue(restartedStore.compareAndSet(recovered.revision(), aborted));
+        assertTrue(restartedStore.findActiveUpdate(world).isEmpty());
+        assertEquals(Phase.ABORTED, restartedStore.findUpdate(firstId).orElseThrow().phase());
 
         UUID secondId = UUID.randomUUID();
         assertTrue(store.beginIfAuthority(preparing(secondId, world, "target-b")));
         assertEquals(SOURCE, store.findAuthority(world).orElseThrow().ownerInstance());
         releaseReservationThroughRecovery(secondId);
+    }
+
+    @Test void danglingActiveReservationFailsClosed() throws Exception {
+        store.initialize();
+        String world = "world-" + UUID.randomUUID();
+        UUID missingDeployment = UUID.randomUUID();
+        try (Connection connection = dataSource.getConnection(); var statement = connection.prepareStatement(
+                "INSERT INTO canopy_active_world_updates (world_id, deployment_id) VALUES (?, ?)")) {
+            statement.setString(1, world);
+            statement.setString(2, missingDeployment.toString());
+            assertEquals(1, statement.executeUpdate());
+        }
+
+        assertThrows(SQLException.class, () -> store.findActiveUpdate(world));
     }
 
     @Test void concurrentStartsReserveOneWorldAndFenceRollsBackAtomicallyOnSqlFailure() throws Exception {
@@ -109,6 +137,36 @@ class JdbcWorldUpdateStoreIntegrationTest {
         releaseReservationThroughRecovery(activeId);
     }
 
+    @Test void retryAfterLostCommitAcknowledgementRecognizesTheDurableFenceWithoutAdvancingAgain() throws Exception {
+        store.initialize();
+        String world = "world-" + UUID.randomUUID();
+        UUID deployment = UUID.randomUUID();
+        WorldAuthority sourceAuthority = new WorldAuthority(world, SOURCE, 1, null);
+        assertTrue(store.initializeAuthority(sourceAuthority));
+
+        WorldUpdateState preparing = preparing(deployment, world, "target-instance");
+        assertTrue(store.beginIfAuthority(preparing));
+        WorldUpdateState ready = ready(preparing);
+        assertTrue(store.compareAndSet(preparing.revision(), ready));
+
+        AtomicBoolean loseNextCommitAcknowledgement = new AtomicBoolean(true);
+        JdbcWorldUpdateStore uncertainStore = new JdbcWorldUpdateStore(commitAcknowledgementLossDataSource(
+            dataSource, loseNextCommitAcknowledgement));
+        ZeroDowntimeUpdateCoordinator coordinator = new ZeroDowntimeUpdateCoordinator(uncertainStore);
+
+        SQLException lostAcknowledgement = assertThrows(SQLException.class,
+            () -> coordinator.fenceAuthority(deployment));
+        assertEquals("Injected loss after durable commit", lostAcknowledgement.getMessage());
+        assertEquals(new WorldAuthority(world, "target-instance", 2, deployment),
+            store.findAuthority(world).orElseThrow());
+        assertEquals(Phase.FENCED, store.findUpdate(deployment).orElseThrow().phase());
+
+        WorldUpdateState retry = coordinator.fenceAuthority(deployment);
+        assertEquals(Phase.FENCED, retry.phase());
+        assertEquals(2, store.findAuthority(world).orElseThrow().epoch());
+        releaseReservationThroughRecovery(deployment);
+    }
+
     private boolean attemptBegin(WorldUpdateState state, CountDownLatch ready, CountDownLatch start) throws Exception {
         ready.countDown();
         if (!start.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("Timed out waiting to start");
@@ -153,5 +211,31 @@ class JdbcWorldUpdateStoreIntegrationTest {
         dataSource.setUrl(System.getProperty("canopy.test.world-update.jdbc"));
         dataSource.setUser("root");
         return dataSource;
+    }
+
+    private static DataSource commitAcknowledgementLossDataSource(DataSource delegate, AtomicBoolean failAfterCommit) {
+        return (DataSource) Proxy.newProxyInstance(DataSource.class.getClassLoader(), new Class<?>[]{DataSource.class},
+            (proxy, method, arguments) -> {
+                if (method.getName().equals("getConnection")) {
+                    Connection connection = (Connection) invoke(delegate, method, arguments);
+                    return Proxy.newProxyInstance(Connection.class.getClassLoader(), new Class<?>[]{Connection.class},
+                        (connectionProxy, connectionMethod, connectionArguments) -> {
+                            Object result = invoke(connection, connectionMethod, connectionArguments);
+                            if (connectionMethod.getName().equals("commit") && failAfterCommit.compareAndSet(true, false)) {
+                                throw new SQLException("Injected loss after durable commit");
+                            }
+                            return result;
+                        });
+                }
+                return invoke(delegate, method, arguments);
+            });
+    }
+
+    private static Object invoke(Object target, java.lang.reflect.Method method, Object[] arguments) throws Throwable {
+        try {
+            return method.invoke(target, arguments);
+        } catch (InvocationTargetException failure) {
+            throw failure.getCause();
+        }
     }
 }

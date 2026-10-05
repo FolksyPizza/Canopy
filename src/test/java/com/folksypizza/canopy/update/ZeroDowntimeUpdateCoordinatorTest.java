@@ -120,6 +120,7 @@ class ZeroDowntimeUpdateCoordinatorTest {
         var coordinator = new ZeroDowntimeUpdateCoordinator(store);
         UUID deployment = UUID.randomUUID();
         coordinator.begin(deployment, WORLD, TARGET);
+        assertEquals(deployment, store.findActiveUpdate(WORLD).orElseThrow().deploymentId());
 
         WorldUpdateState recovering = coordinator.recover(deployment);
         assertEquals(Phase.RECOVERING, recovering.phase());
@@ -129,6 +130,15 @@ class ZeroDowntimeUpdateCoordinatorTest {
                 new ZeroDowntimeUpdateCoordinator.RecoveryEvidence(deployment, WORLD, TARGET, 10, true, true, true)));
         assertEquals(Phase.ABORTED, coordinator.finishRecoveryOnSource(deployment).phase());
         assertEquals(new WorldAuthority(WORLD, SOURCE, 9, null), store.findAuthority(WORLD).orElseThrow());
+        assertTrue(store.findActiveUpdate(WORLD).isEmpty());
+    }
+
+    @Test void danglingActiveReservationFailsClosed() throws Exception {
+        var store = new MemoryUpdateStore();
+        store.initializeAuthority(new WorldAuthority(WORLD, SOURCE, 9, null));
+        store.activeDeployments.put(WORLD, UUID.randomUUID());
+
+        assertThrows(java.sql.SQLException.class, () -> store.findActiveUpdate(WORLD));
     }
 
     @Test void onlyOneDeploymentCanReserveAWorldAndSourceRecoveryReleasesTheReservation() throws Exception {
@@ -180,6 +190,25 @@ class ZeroDowntimeUpdateCoordinatorTest {
         assertEquals(Phase.COMPLETED, coordinator.finishRecoveryOnTarget(deployment,
             new ZeroDowntimeUpdateCoordinator.RecoveryEvidence(deployment, WORLD, TARGET, 13, true, true, true)).phase());
         assertEquals(new WorldAuthority(WORLD, TARGET, 13, deployment), store.findAuthority(WORLD).orElseThrow());
+    }
+
+    @Test void retryingRecoveryRevalidatesTheDurableAuthorityOwnerAndDeployment() throws Exception {
+        var sourceStore = new MemoryUpdateStore();
+        sourceStore.initializeAuthority(new WorldAuthority(WORLD, SOURCE, 9, null));
+        var sourceCoordinator = new ZeroDowntimeUpdateCoordinator(sourceStore);
+        UUID sourceDeployment = UUID.randomUUID();
+        sourceCoordinator.begin(sourceDeployment, WORLD, TARGET);
+        sourceCoordinator.recover(sourceDeployment);
+        sourceStore.forceAuthority(new WorldAuthority(WORLD, "unexpected-owner", 9, null));
+        assertThrows(ZeroDowntimeUpdateCoordinator.Conflict.class, () -> sourceCoordinator.recover(sourceDeployment));
+
+        var targetStore = readyStore();
+        var targetCoordinator = new ZeroDowntimeUpdateCoordinator(targetStore);
+        UUID targetDeployment = targetStore.onlyDeployment();
+        targetCoordinator.fenceAuthority(targetDeployment);
+        targetCoordinator.recover(targetDeployment);
+        targetStore.forceAuthority(new WorldAuthority(WORLD, TARGET, 13, UUID.randomUUID()));
+        assertThrows(ZeroDowntimeUpdateCoordinator.Conflict.class, () -> targetCoordinator.recover(targetDeployment));
     }
 
     @Test void staleFenceCannotPromoteOrReplaceAnAuthorityThatChanged() throws Exception {
@@ -255,6 +284,17 @@ class ZeroDowntimeUpdateCoordinatorTest {
 
         @Override public synchronized Optional<WorldUpdateState> findUpdate(UUID deploymentId) {
             return Optional.ofNullable(updates.get(deploymentId));
+        }
+
+        @Override public synchronized Optional<WorldUpdateState> findActiveUpdate(String worldId) throws java.sql.SQLException {
+            UUID deploymentId = activeDeployments.get(worldId);
+            if (deploymentId == null) return Optional.empty();
+            WorldUpdateState state = updates.get(deploymentId);
+            if (state == null || !state.worldId().equals(worldId)
+                    || state.phase() == Phase.ABORTED || state.phase() == Phase.COMPLETED) {
+                throw new java.sql.SQLException("Active update reservation is inconsistent for world " + worldId);
+            }
+            return Optional.of(state);
         }
 
         @Override public synchronized boolean beginIfAuthority(WorldUpdateState initial) {

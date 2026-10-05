@@ -197,9 +197,12 @@ public final class ZeroDowntimeUpdateCoordinator {
     public WorldUpdateState recover(UUID deploymentId) throws SQLException {
         WorldUpdateState state = required(deploymentId);
         if (state.phase() == Phase.ABORTED || state.phase() == Phase.COMPLETED) return state;
-        if (state.phase() == Phase.RECOVERING) return state;
         WorldAuthority authority = store.findAuthority(state.worldId())
             .orElseThrow(() -> new Conflict("World authority is unavailable during recovery"));
+        if (state.phase() == Phase.RECOVERING) {
+            verifyRecoveryAuthority(state, authority);
+            return state;
+        }
         RecoveryMode mode;
         if (authority.ownerInstance().equals(state.sourceInstance()) && authority.epoch() == state.sourceEpoch()) {
             if (state.phase() == Phase.FENCED || state.phase() == Phase.PROMOTED) {
@@ -217,6 +220,19 @@ public final class ZeroDowntimeUpdateCoordinator {
         WorldUpdateState next = copy(state, Phase.RECOVERING, state.revision() + 1, state.checkpointSequence(),
             state.checkpointSha256(), state.replayedSequence(), state.barrierSequence(), state.capabilities(), mode);
         return save(state, next);
+    }
+
+    private static void verifyRecoveryAuthority(WorldUpdateState state, WorldAuthority authority) {
+        boolean sourceStillOwns = authority.ownerInstance().equals(state.sourceInstance())
+            && authority.epoch() == state.sourceEpoch();
+        boolean targetOwns = authority.ownerInstance().equals(state.targetInstance())
+            && authority.epoch() == state.sourceEpoch() + 1
+            && state.deploymentId().equals(authority.deploymentId());
+        boolean modeMatches = switch (state.recoveryMode()) {
+            case SOURCE_BEFORE_FENCE -> sourceStillOwns;
+            case TARGET_AFTER_FENCE -> targetOwns;
+        };
+        if (!modeMatches) throw new Conflict("World authority no longer matches the recorded recovery path");
     }
 
     /** Releases a pre-fence recovery only after confirming the original source still owns the unchanged epoch. */

@@ -85,6 +85,49 @@ public final class JdbcWorldUpdateStore implements WorldUpdateStore {
         }
     }
 
+    @Override public Optional<WorldUpdateState> findActiveUpdate(String worldId) throws SQLException {
+        String sql = """
+            SELECT active_update.deployment_id, state_row.world_id, state_row.source_instance,
+                state_row.target_instance, state_row.source_epoch, state_row.phase,
+                state_row.revision, state_row.checkpoint_sequence, state_row.checkpoint_sha256,
+                state_row.replayed_sequence, state_row.barrier_sequence, state_row.capability_bits,
+                state_row.recovery_mode
+            FROM canopy_active_world_updates active_update
+            LEFT JOIN canopy_zero_downtime_updates state_row
+                ON state_row.deployment_id=active_update.deployment_id
+            WHERE active_update.world_id=?
+            """;
+        try (Connection connection = dataSource.getConnection(); PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, worldId);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) return Optional.empty();
+
+                UUID deploymentId;
+                try {
+                    deploymentId = UUID.fromString(rows.getString(1));
+                } catch (RuntimeException invalidDeploymentId) {
+                    throw new SQLException("Active update reservation has an invalid deployment id", invalidDeploymentId);
+                }
+                if (rows.getString(2) == null || !worldId.equals(rows.getString(2))) {
+                    throw new SQLException("Active update reservation has no matching update record for world " + worldId);
+                }
+
+                WorldUpdateState state;
+                try {
+                    state = readUpdate(deploymentId, rows, 2);
+                } catch (RuntimeException invalidState) {
+                    throw new SQLException("Active update reservation has an invalid update record for world " + worldId,
+                        invalidState);
+                }
+                if (terminal(state.phase())) {
+                    throw new SQLException("Active update reservation points to a terminal update for world " + worldId);
+                }
+                if (rows.next()) throw new SQLException("Multiple active update reservations found for world " + worldId);
+                return Optional.of(state);
+            }
+        }
+    }
+
     @Override public boolean beginIfAuthority(WorldUpdateState initial) throws SQLException {
         requirePhase(initial, WorldUpdateState.Phase.PREPARING);
         try (Connection connection = dataSource.getConnection()) {
@@ -237,12 +280,18 @@ public final class JdbcWorldUpdateStore implements WorldUpdateStore {
             statement.setString(1, deploymentId.toString());
             try (ResultSet rows = statement.executeQuery()) {
                 if (!rows.next()) return Optional.empty();
-                return Optional.of(new WorldUpdateState(deploymentId, rows.getString(1), rows.getString(2), rows.getString(3),
-                    rows.getLong(4), WorldUpdateState.Phase.valueOf(rows.getString(5)), rows.getLong(6), rows.getLong(7),
-                    rows.getString(8), rows.getLong(9), rows.getLong(10),
-                    WorldUpdateState.capabilitiesFromBits(rows.getLong(11)), recoveryMode(rows.getString(12))));
+                return Optional.of(readUpdate(deploymentId, rows, 1));
             }
         }
+    }
+
+    private static WorldUpdateState readUpdate(UUID deploymentId, ResultSet rows, int firstColumn) throws SQLException {
+        return new WorldUpdateState(deploymentId, rows.getString(firstColumn), rows.getString(firstColumn + 1),
+            rows.getString(firstColumn + 2), rows.getLong(firstColumn + 3),
+            WorldUpdateState.Phase.valueOf(rows.getString(firstColumn + 4)), rows.getLong(firstColumn + 5),
+            rows.getLong(firstColumn + 6), rows.getString(firstColumn + 7), rows.getLong(firstColumn + 8),
+            rows.getLong(firstColumn + 9), WorldUpdateState.capabilitiesFromBits(rows.getLong(firstColumn + 10)),
+            recoveryMode(rows.getString(firstColumn + 11)));
     }
 
     private static Optional<WorldAuthority> selectAuthority(Connection connection, String worldId, boolean lock)

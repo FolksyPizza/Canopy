@@ -18,6 +18,12 @@ public interface WorldUpdateStore {
 
     Optional<WorldUpdateState> findUpdate(UUID deploymentId) throws SQLException;
 
+    /**
+     * Finds the update reserved for {@code worldId}, if one exists. An active reservation without a matching,
+     * non-terminal update record is corrupt and must fail closed rather than appear as no active update.
+     */
+    Optional<WorldUpdateState> findActiveUpdate(String worldId) throws SQLException;
+
     /** Inserts a new update only if its source owner and epoch still hold authority for the world. */
     boolean beginIfAuthority(WorldUpdateState initial) throws SQLException;
 
