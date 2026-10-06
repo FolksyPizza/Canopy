@@ -72,15 +72,19 @@ promotion, deployment ID still match the recorded recovery path; focused coordin
 This qualifies coordinator and database transaction behavior only; it does not qualify a Paper authority fence or an
 end-to-end update.
 
-A separate Paper 1.21.11 candidate now adds a `WorldAuthorityGate` and wraps main-thread task polling and each server
-tick in admission leases. Its five focused unit tests, Paper compilation, `NormalTestSuite`, and bundled-server build
-passed. An isolated runtime probe also observed the gate drain active work, hold the tick count steady for 1.5 seconds,
-and resume ticking. Startup now requires explicit instance, epoch and mode values; an isolated boot without them failed
-before opening its listener. Explicit standby mode held ticks until the probe supplied a matching synthetic activation
-proof. The proof was not read from the durable authority store, so this does not verify actual ownership. This is a
-narrow main-loop prototype: it does not fence asynchronous world mutations, chunk or save completion, player data or
-plugin side effects; it is not connected to Canopy's coordinator and is not deployed. It does not provide a checkpoint,
-mutation journal, replay, standby catch-up or an end-to-end update path.
+A separate Paper 1.21.11 candidate adds a `WorldAuthorityGate` around main-thread task polling and server ticks, with
+targeted leases for selected asynchronous chunk/entity/POI writes, dimension metadata saves, and player persistence.
+The player fence covers automatic player NBT, stats and advancement saves, explicit `Player.saveData()`, offline-player
+stat mutations, and the incremental-autosave timestamp. Persistence failures block a clean authority drain; routine
+shutdown saves skip safely after authority closes, while explicit saves report rejection. Source-patch regeneration,
+Paper compilation and 23 focused gate/persistence tests passed after these additions. The broader `NormalTestSuite`
+passed 2,378 checks before the final offline-stat and shared persistence-helper changes. An earlier isolated runtime
+probe observed the gate drain work, hold the tick count steady for 1.5 seconds, and resume ticking. Startup requires
+explicit instance, epoch and mode values; a missing-config boot failed before opening its listener. Standby mode held
+ticks until a synthetic activation proof was supplied, but that proof was not read from the durable authority store.
+This remains a partial engine prototype: `ServerLevel.save()` and other world writes, every asynchronous commit and
+plugin side effects are not comprehensively fenced. It is not connected to Canopy's coordinator and is not deployed;
+it provides no checkpoint, mutation journal, replay, standby catch-up or end-to-end update path.
 
 The next implementation work is to connect trusted providers for the checkpoint, journal, replay and world authority
 fence, then integrate the controller with the coordinator and gateway sessions. Promotion must remain unavailable until
