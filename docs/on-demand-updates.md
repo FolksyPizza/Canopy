@@ -86,6 +86,12 @@ This remains a partial engine prototype: `ServerLevel.save()` and other world wr
 plugin side effects are not comprehensively fenced. It is not connected to Canopy's coordinator and is not deployed;
 it provides no checkpoint, mutation journal, replay, standby catch-up or end-to-end update path.
 
+The candidate also has no authorized final-save path after quiescence. Quiescing closes ordinary world-work leases,
+while `ServerLevel.saveLevelData()` asks for an ordinary active-work lease; that save is rejected once the gate leaves
+ACTIVE. A correct checkpoint needs a separate transition-bound API that is available only after the source has
+quiesced, waits for every checkpoint write to finish, and returns verified checkpoint evidence. Reopening ordinary
+leases in the quiesced phase would let unrelated mutations enter the checkpoint window and is not a safe shortcut.
+
 The next implementation work is to connect trusted providers for the checkpoint, journal, replay and world authority
 fence, then integrate the controller with the coordinator and gateway sessions. Promotion must remain unavailable until
 the source process can prove it has stopped writing and the standby has applied the exact final watermark. The tested
