@@ -14,7 +14,10 @@ A single Paper server is bound to one process and, in practice, a few busy chunk
 dominate a tick. Folia relaxes this by scheduling independent regions in parallel, but a
 world still lives inside one JVM. Canopy takes the next step: it splits the world across
 processes (and, eventually, machines) and makes the boundary between them invisible to the
-player.
+player as far as practical. Making distributed simulation behave like one ordinary server
+is a core reason Canopy exists. Backend simulation balancing and network-connection
+balancing are separate scaling needs; [the distribution and availability draft](docs/distribution-and-availability.md)
+records the longer-term goals for redundant player-data databases and multiple CSG instances.
 
 ## Components
 
