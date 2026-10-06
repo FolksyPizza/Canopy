@@ -97,6 +97,8 @@ grpc:
 # HTTP metrics endpoint (raw per-region metrics JSON)
 metrics:
   enabled: true
+  # Loopback by default. Use a private interface only when remote scraping is required and access is restricted.
+  bind: 127.0.0.1
   port: 8080
 
 # Per-region fluid tick budget
@@ -121,9 +123,6 @@ lease:
 # Telemetry push interval to control plane
 telemetry:
   interval-seconds: 10
-
-# Logging
-log-level: INFO
 
 # Must exactly match the world ID bound into Paper's world-authority startup gate.
 # An empty value intentionally keeps the server closed until durable initial ownership is configured.

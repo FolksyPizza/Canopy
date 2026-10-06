@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.util.Objects;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 
@@ -15,26 +16,30 @@ import java.util.concurrent.ScheduledExecutorService;
  */
 public class MetricsEndpoint {
     private static final Logger log = LoggerFactory.getLogger(MetricsEndpoint.class);
-    private static final String URI_PREFIX = "/metrics";
-
-    private final int port;
+    private final boolean enabled;
+    private final InetSocketAddress bindAddress;
     private final MetricsCollector metricsCollector;
     private com.sun.net.httpserver.HttpServer server;
     private final ScheduledExecutorService executor = Executors.newScheduledThreadPool(1);
     private boolean running = false;
 
-    public MetricsEndpoint(int port, MetricsCollector metricsCollector) {
-        this.port = port;
-        this.metricsCollector = metricsCollector;
+    public MetricsEndpoint(boolean enabled, InetSocketAddress bindAddress, MetricsCollector metricsCollector) {
+        this.enabled = enabled;
+        this.bindAddress = Objects.requireNonNull(bindAddress, "bindAddress");
+        this.metricsCollector = Objects.requireNonNull(metricsCollector, "metricsCollector");
     }
 
     /**
      * Start the metrics endpoint.
      */
     public void start() {
+        if (!this.enabled) {
+            log.info("Metrics HTTP endpoint disabled");
+            return;
+        }
         try {
-            server = com.sun.net.httpserver.HttpServer.create(new InetSocketAddress(port), 0);
-            server.createContext("/metrics", exchange -> {
+            server = com.sun.net.httpserver.HttpServer.create(this.bindAddress, 0);
+            server.createContext("/canopy/metrics.json", exchange -> {
                 String path = exchange.getRequestURI().getPath();
                 if ("/canopy/metrics.json".equals(path)) {
                     String metricsJson;
@@ -57,9 +62,9 @@ public class MetricsEndpoint {
             server.setExecutor(executor);
             server.start();
             running = true;
-            log.info("Metrics HTTP endpoint started on port {}", port);
+            log.info("Metrics HTTP endpoint started on {}", this.server.getAddress());
         } catch (IOException e) {
-            log.error("Failed to start metrics HTTP server on port {}", port, e);
+            log.error("Failed to start metrics HTTP server on {}", this.bindAddress, e);
         }
     }
 
@@ -70,9 +75,9 @@ public class MetricsEndpoint {
         if (server != null) {
             server.stop(0);
             running = false;
-            executor.shutdown();
             log.info("Metrics HTTP endpoint stopped");
         }
+        executor.shutdownNow();
     }
 
     /**
@@ -86,6 +91,6 @@ public class MetricsEndpoint {
      * Get the port this server is bound to.
      */
     public int getPort() {
-        return server != null ? server.getAddress().getPort() : port;
+        return server != null ? server.getAddress().getPort() : this.bindAddress.getPort();
     }
 }

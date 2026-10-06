@@ -144,6 +144,12 @@ leases/storage failures, cancellation, protocol selection, input gating, chunk-v
 serving failures and experimental shadow transitions are recorded. UUIDs are retained for correlation;
 credentials, packet bodies, inventory contents, chat and exception messages are excluded.
 
+Canopy's conventional log output follows the host Paper logger configuration. Structured audit retention and
+packet tracing are configured separately below.
+
+The per-region metrics endpoint respects `metrics.enabled` and binds to `127.0.0.1` by default. Set
+`metrics.bind` to a restricted private interface only when remote scraping is required.
+
 Gateway settings live in `plugins/canopyswitch/session.properties`:
 
 ```properties

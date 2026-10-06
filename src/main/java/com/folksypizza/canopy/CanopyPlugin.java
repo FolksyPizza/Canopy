@@ -38,6 +38,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -352,6 +354,15 @@ public class CanopyPlugin extends JavaPlugin {
     private void initNetworkEndpoints() {
         int grpcPort = getConfig().getInt("grpc.port", 50051);
         int metricsPort = getConfig().getInt("metrics.port", 8080);
+        boolean metricsEnabled = getConfig().getBoolean("metrics.enabled", true);
+        InetAddress metricsBindAddress;
+        try {
+            metricsBindAddress = metricsEnabled
+                ? InetAddress.getByName(getConfig().getString("metrics.bind", "127.0.0.1"))
+                : InetAddress.getLoopbackAddress();
+        } catch (UnknownHostException invalidBindAddress) {
+            throw new IllegalArgumentException("metrics.bind is not a resolvable address", invalidBindAddress);
+        }
 
         // The gRPC-exposed coordination + migration services share the plugin's live state.
         ShardCoordinationServiceImpl coordinationService = new ShardCoordinationServiceImpl(
@@ -369,9 +380,9 @@ public class CanopyPlugin extends JavaPlugin {
         grpcServer.start();
         log.info("gRPC server started on port {} (tile-version, coordination, migration)", grpcPort);
 
-        metricsEndpoint = new MetricsEndpoint(metricsPort, metricsCollector);
+        metricsEndpoint = new MetricsEndpoint(metricsEnabled,
+            new InetSocketAddress(metricsBindAddress, metricsPort), metricsCollector);
         metricsEndpoint.start();
-        log.info("Metrics endpoint started on port {}", metricsPort);
     }
 
 
