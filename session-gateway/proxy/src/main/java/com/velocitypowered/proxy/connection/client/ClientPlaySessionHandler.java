@@ -131,6 +131,11 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
   private final ChatHandler<? extends MinecraftPacket> chatHandler;
   private final CommandHandler<? extends MinecraftPacket> commandHandler;
   private final ChatTimeKeeper timeKeeper = new ChatTimeKeeper();
+  private final CanopyChatContinuity canopyChat = new CanopyChatContinuity();
+
+  public ByteBuf canopyChatPacket(ByteBuf packet) {
+    return canopyChat.clientbound(packet, player.getProtocolVersion().getProtocol());
+  }
 
   private CompletableFuture<Void> configSwitchFuture;
 
@@ -676,6 +681,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
    * @param destination the new server we are connecting to
    */
   public void handleBackendJoinGame(JoinGamePacket joinGame, VelocityServerConnection destination) {
+    canopyChat.beginBackend(destination.getCanopyMode() != CanopySwitchPolicy.Mode.NORMAL);
     CanopyLifecycleHooks.audit(player.getUniqueId(), "world.backend_join", "target", destination.getServerInfo().getName(),
         "mode", destination.getCanopyMode().name(), "protocol", player.getProtocolVersion().getProtocol());
     final MinecraftConnection serverMc = destination.ensureConnected();

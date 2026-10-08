@@ -585,7 +585,8 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
         return;
       }
     }
-    ByteBuf out = rewriter.active(serverConn.getPlayer().getProtocolVersion())
+    ByteBuf chat = playerSessionHandler.canopyChatPacket(buf);
+    ByteBuf out = chat != buf ? chat : rewriter.active(serverConn.getPlayer().getProtocolVersion())
         ? rewriter.processClientbound(buf)
         : buf;
     boolean rewritten = out != buf;

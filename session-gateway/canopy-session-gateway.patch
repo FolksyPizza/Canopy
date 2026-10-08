@@ -44,7 +44,7 @@ index 92679a2c..6d91a88b 100644
          if (!pkt.handle(activeSessionHandler)) {
            activeSessionHandler.handleGeneric(pkt);
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/BackendPlaySessionHandler.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/BackendPlaySessionHandler.java
-index 37a61d35..df20b46f 100644
+index 37a61d35..986207a3 100644
 --- a/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/BackendPlaySessionHandler.java
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/backend/BackendPlaySessionHandler.java
 @@ -1,5 +1,7 @@
@@ -154,7 +154,7 @@ index 37a61d35..df20b46f 100644
      if (packet instanceof PluginMessagePacket pluginMessage) {
        pluginMessage.retain();
      }
-@@ -475,14 +553,57 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
+@@ -475,14 +553,58 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
  
    @Override
    public void handleUnknown(ByteBuf buf) {
@@ -192,7 +192,8 @@ index 37a61d35..df20b46f 100644
 +        return;
 +      }
 +    }
-+    ByteBuf out = rewriter.active(serverConn.getPlayer().getProtocolVersion())
++    ByteBuf chat = playerSessionHandler.canopyChatPacket(buf);
++    ByteBuf out = chat != buf ? chat : rewriter.active(serverConn.getPlayer().getProtocolVersion())
 +        ? rewriter.processClientbound(buf)
 +        : buf;
 +    boolean rewritten = out != buf;
@@ -214,7 +215,7 @@ index 37a61d35..df20b46f 100644
    @Override
    public void readCompleted() {
      playerConnection.flush();
-@@ -491,6 +612,8 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
+@@ -491,6 +613,8 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
  
    @Override
    public void exception(Throwable throwable) {
@@ -223,7 +224,7 @@ index 37a61d35..df20b46f 100644
      exceptionTriggered = true;
      serverConn.getPlayer().handleConnectionException(serverConn.getServer(), throwable,
          !(throwable instanceof ReadTimeoutException));
-@@ -502,6 +625,9 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
+@@ -502,6 +626,9 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
  
    @Override
    public void disconnected() {
@@ -1584,6 +1585,63 @@ index 00000000..1219c1f5
 +    latest.clear();
 +    repair = false;
 +    repairing = false;
++  }
++}
+diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyChatContinuity.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyChatContinuity.java
+new file mode 100644
+index 00000000..bfc4d297
+--- /dev/null
++++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyChatContinuity.java
+@@ -0,0 +1,51 @@
++/*
++ * Copyright (C) 2026 Canopy Contributors
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ */
++package com.velocitypowered.proxy.connection.client;
++
++import com.velocitypowered.proxy.protocol.ProtocolUtils;
++import io.netty.buffer.ByteBuf;
++
++/** Retains the recipient's unsigned global chat counter across backend changes. */
++public final class CanopyChatContinuity {
++  private static final int PLAYER_CHAT = 0x3f;
++  private int nextIndex;
++  private int backendBase;
++
++  /** A full configuration resets client chat state; a skipped configuration preserves it. */
++  public void beginBackend(boolean configurationSkipped) {
++    if (!configurationSkipped) {
++      nextIndex = 0;
++    }
++    backendBase = nextIndex;
++  }
++
++  /** Only the recipient counter changes. Sender indices, signatures and payload stay intact. */
++  public ByteBuf clientbound(ByteBuf input, int protocol) {
++    CanopyProtocolProfile profile = CanopyProtocolProfile.find(protocol);
++    if (profile == null) {
++      return input;
++    }
++    ByteBuf read = input.duplicate();
++    if (profile.clientbound(ProtocolUtils.readVarInt(read)) != PLAYER_CHAT) {
++      return input;
++    }
++    int fieldStart = read.readerIndex();
++    int backendIndex = ProtocolUtils.readVarInt(read);
++    if (backendIndex < 0) {
++      throw new IllegalArgumentException("Negative backend chat index");
++    }
++    // An additive mapping preserves any actual gap/reordering within the backend stream.
++    int clientIndex = Math.addExact(backendBase, backendIndex);
++    nextIndex = Math.addExact(clientIndex, 1);
++    if (clientIndex == backendIndex) {
++      return input;
++    }
++    ByteBuf output = input.alloc().buffer(input.readableBytes() + 5);
++    output.writeBytes(input, input.readerIndex(), fieldStart - input.readerIndex());
++    ProtocolUtils.writeVarInt(output, clientIndex);
++    output.writeBytes(input, read.readerIndex(), input.writerIndex() - read.readerIndex());
++    return output;
 +  }
 +}
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyChunkView.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/CanopyChunkView.java
@@ -4487,7 +4545,7 @@ index b8604103..6ed1c01c 100644
        VelocityServerConnection targetServer =
            player.getConnectionInFlightOrConnectedServer();
 diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ClientPlaySessionHandler.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ClientPlaySessionHandler.java
-index beecf3ac..30a53f45 100644
+index beecf3ac..8eb53e5b 100644
 --- a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ClientPlaySessionHandler.java
 +++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/ClientPlaySessionHandler.java
 @@ -1,5 +1,7 @@
@@ -4506,7 +4564,18 @@ index beecf3ac..30a53f45 100644
  import com.velocitypowered.proxy.protocol.packet.BossBarPacket;
  import com.velocitypowered.proxy.protocol.packet.ClientSettingsPacket;
  import com.velocitypowered.proxy.protocol.packet.JoinGamePacket;
-@@ -133,6 +136,11 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+@@ -128,11 +131,21 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+   private final ChatHandler<? extends MinecraftPacket> chatHandler;
+   private final CommandHandler<? extends MinecraftPacket> commandHandler;
+   private final ChatTimeKeeper timeKeeper = new ChatTimeKeeper();
++  private final CanopyChatContinuity canopyChat = new CanopyChatContinuity();
++
++  public ByteBuf canopyChatPacket(ByteBuf packet) {
++    return canopyChat.clientbound(packet, player.getProtocolVersion().getProtocol());
++  }
+-
++
+   private CompletableFuture<Void> configSwitchFuture;
  
    private int failedTabCompleteAttempts;
  
@@ -4518,7 +4587,7 @@ index beecf3ac..30a53f45 100644
    /**
     * Constructs a client play session handler.
     *
-@@ -142,6 +150,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+@@ -142,6 +155,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
    public ClientPlaySessionHandler(VelocityServer server, ConnectedPlayer player) {
      this.player = player;
      this.server = server;
@@ -4526,7 +4595,7 @@ index beecf3ac..30a53f45 100644
  
      if (this.player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_19_3)) {
        this.chatHandler = new SessionChatHandler(this.player, this.server);
-@@ -190,6 +199,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+@@ -190,6 +204,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
  
    @Override
    public void deactivated() {
@@ -4534,7 +4603,7 @@ index beecf3ac..30a53f45 100644
      player.discardChatQueue();
      PluginMessagePacket message;
      while ((message = loginPluginMessages.poll()) != null) {
-@@ -522,6 +532,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+@@ -522,6 +537,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
  
    @Override
    public void handleGeneric(MinecraftPacket packet) {
@@ -4542,7 +4611,7 @@ index beecf3ac..30a53f45 100644
      VelocityServerConnection serverConnection = player.getConnectedServer();
      if (serverConnection == null) {
        // No server connection yet, probably transitioning.
-@@ -543,6 +554,12 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+@@ -543,6 +559,12 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
  
    @Override
    public void handleUnknown(ByteBuf buf) {
@@ -4555,7 +4624,7 @@ index beecf3ac..30a53f45 100644
      VelocityServerConnection serverConnection = player.getConnectedServer();
      if (serverConnection == null) {
        // No server connection yet, probably transitioning.
-@@ -555,12 +572,24 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+@@ -555,12 +577,24 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
          && serverConnection.getPhase().consideredComplete()
          && smc.getState() == StateRegistry.PLAY;
      if (stateAllowsForward) {
@@ -4581,7 +4650,7 @@ index beecf3ac..30a53f45 100644
      player.teardown();
    }
  
-@@ -596,7 +625,9 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+@@ -596,7 +630,9 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
      if (serverConn != null) {
        MinecraftConnection smc = serverConn.getConnection();
        if (smc != null) {
@@ -4592,7 +4661,7 @@ index beecf3ac..30a53f45 100644
        }
      }
    }
-@@ -617,17 +648,21 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+@@ -617,17 +653,21 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
        // Send keep alive to try to avoid timeouts
        player.sendKeepAlive();
  
@@ -4623,10 +4692,11 @@ index beecf3ac..30a53f45 100644
      player.switchToConfigState();
  
      return configSwitchFuture;
-@@ -641,7 +676,14 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+@@ -641,7 +681,15 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
     * @param destination the new server we are connecting to
     */
    public void handleBackendJoinGame(JoinGamePacket joinGame, VelocityServerConnection destination) {
++    canopyChat.beginBackend(destination.getCanopyMode() != CanopySwitchPolicy.Mode.NORMAL);
 +    CanopyLifecycleHooks.audit(player.getUniqueId(), "world.backend_join", "target", destination.getServerInfo().getName(),
 +        "mode", destination.getCanopyMode().name(), "protocol", player.getProtocolVersion().getProtocol());
      final MinecraftConnection serverMc = destination.ensureConnected();
@@ -4638,7 +4708,7 @@ index beecf3ac..30a53f45 100644
  
      if (!spawned) {
        // The player wasn't spawned in yet, so we don't need to do anything special. Just send
-@@ -650,6 +692,12 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+@@ -650,6 +698,12 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
        player.getConnection().delayedWrite(joinGame);
        // Required for Legacy Forge
        player.getPhase().onFirstJoin(player);
@@ -4651,7 +4721,7 @@ index beecf3ac..30a53f45 100644
      } else {
        // Clear tab list to avoid duplicate entries
        player.getTabList().clearAll();
-@@ -658,8 +706,30 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+@@ -658,8 +712,30 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
        // entity IDs and send new dimension information.
        if (player.getConnection().getType() == ConnectionTypes.LEGACY_FORGE) {
          this.doSafeClientServerSwitch(joinGame);
@@ -4682,7 +4752,7 @@ index beecf3ac..30a53f45 100644
        }
      }
  
-@@ -732,6 +802,92 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
+@@ -732,6 +808,92 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
      player.getConnection().delayedWrite(respawn);
    }
  
@@ -4951,10 +5021,10 @@ index 298e74d4..4df72086 100644
      if (protocolVersion.noLessThan(ProtocolVersion.MINECRAFT_1_8)) {
 diff --git a/proxy/src/main/resources/canopy/protocol-profiles.tsv b/proxy/src/main/resources/canopy/protocol-profiles.tsv
 new file mode 100644
-index 00000000..d0134bad
+index 00000000..3e91c2ce
 --- /dev/null
 +++ b/proxy/src/main/resources/canopy/protocol-profiles.tsv
-@@ -0,0 +1,467 @@
+@@ -0,0 +1,474 @@
 +# protocol direction canonical-id wire-id; IDs are hexadecimal
 +# 771-775: PrismarineJS/minecraft-data protocol.json; 776-777: Mojang server packet reports
 +771 CB 1 1
@@ -4974,6 +5044,7 @@ index 00000000..d0134bad
 +771 CB 34 2f
 +771 CB 35 30
 +771 CB 36 31
++771 CB 3f 3a
 +771 CB 42 3d
 +771 CB 46 41
 +771 CB 4b 46
@@ -5031,6 +5102,7 @@ index 00000000..d0134bad
 +772 CB 34 2f
 +772 CB 35 30
 +772 CB 36 31
++772 CB 3f 3a
 +772 CB 42 3d
 +772 CB 46 41
 +772 CB 4b 46
@@ -5088,6 +5160,7 @@ index 00000000..d0134bad
 +773 CB 34 34
 +773 CB 35 35
 +773 CB 36 36
++773 CB 3f 3f
 +773 CB 42 42
 +773 CB 46 46
 +773 CB 4b 4b
@@ -5145,6 +5218,7 @@ index 00000000..d0134bad
 +774 CB 34 34
 +774 CB 35 35
 +774 CB 36 36
++774 CB 3f 3f
 +774 CB 42 42
 +774 CB 46 46
 +774 CB 4b 4b
@@ -5202,6 +5276,7 @@ index 00000000..d0134bad
 +775 CB 34 36
 +775 CB 35 37
 +775 CB 36 38
++775 CB 3f 41
 +775 CB 42 44
 +775 CB 46 48
 +775 CB 4b 4d
@@ -5261,6 +5336,7 @@ index 00000000..d0134bad
 +776 CB 34 36
 +776 CB 35 37
 +776 CB 36 38
++776 CB 3f 41
 +776 CB 42 44
 +776 CB 46 48
 +776 CB 4b 4d
@@ -5320,6 +5396,7 @@ index 00000000..d0134bad
 +777 CB 34 37
 +777 CB 35 38
 +777 CB 36 39
++777 CB 3f 42
 +777 CB 42 45
 +777 CB 46 49
 +777 CB 4b 4e
@@ -5989,6 +6066,87 @@ index 00000000..194897cd
 +      assertFalse(view.consumeRepair(profile, respawn, (type, name) -> true));
 +      assertEquals(1, health.refCnt());
 +    } finally { health.release(); respawn.release(); }
++  }
++}
+diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyChatContinuityTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyChatContinuityTest.java
+new file mode 100644
+index 00000000..229b6d27
+--- /dev/null
++++ b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyChatContinuityTest.java
+@@ -0,0 +1,75 @@
++/*
++ * Copyright (C) 2026 Canopy Contributors
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ */
++package com.velocitypowered.proxy.connection.client;
++
++import static org.junit.jupiter.api.Assertions.*;
++
++import com.velocitypowered.proxy.protocol.ProtocolUtils;
++import io.netty.buffer.ByteBuf;
++import io.netty.buffer.Unpooled;
++import org.junit.jupiter.api.Test;
++
++class CanopyChatContinuityTest {
++  private ByteBuf packet(int protocol, int index) {
++    ByteBuf packet = Unpooled.buffer();
++    ProtocolUtils.writeVarInt(packet, CanopyProtocolProfile.find(protocol).clientboundWire(0x3f));
++    ProtocolUtils.writeVarInt(packet, index);
++    // Represents the signed body; the bridge must not change even a single byte after the counter.
++    for (int i = 0; i < 300; i++) packet.writeByte(i);
++    return packet;
++  }
++
++  private void expect(CanopyChatContinuity bridge, int protocol, int backend, int client) {
++    ByteBuf input = packet(protocol, backend);
++    int originalReader = input.readerIndex();
++    ByteBuf output = bridge.clientbound(input, protocol);
++    try {
++      assertEquals(originalReader, input.readerIndex());
++      ByteBuf read = output.duplicate();
++      assertEquals(CanopyProtocolProfile.find(protocol).clientboundWire(0x3f), ProtocolUtils.readVarInt(read));
++      assertEquals(client, ProtocolUtils.readVarInt(read));
++      assertEquals(300, read.readableBytes());
++      for (int i = 0; i < 300; i++) assertEquals((byte) i, read.readByte());
++    } finally {
++      if (output != input) output.release();
++      input.release();
++    }
++  }
++
++  @Test void repeatedSwitchesRetainGlobalCounterOnEveryNativeProfile() {
++    for (int protocol : CanopyProtocolProfile.supportedProtocols()) {
++      var bridge = new CanopyChatContinuity();
++      bridge.beginBackend(false);
++      for (int index = 0; index < 128; index++) expect(bridge, protocol, index, index);
++      bridge.beginBackend(true);
++      expect(bridge, protocol, 0, 128);
++      expect(bridge, protocol, 1, 129);
++      bridge.beginBackend(true);
++      bridge.beginBackend(true); // empty backend, followed by another switch
++      expect(bridge, protocol, 0, 130);
++      bridge.beginBackend(false);
++      expect(bridge, protocol, 0, 0);
++    }
++  }
++
++  @Test void backendGapIsNotHiddenByCounterTranslation() {
++    var bridge = new CanopyChatContinuity();
++    bridge.beginBackend(false);
++    expect(bridge, 774, 0, 0);
++    bridge.beginBackend(true);
++    expect(bridge, 774, 0, 1);
++    expect(bridge, 774, 2, 3); // actual missing packet remains visible to the client
++  }
++
++  @Test void nonChatAndUnknownProtocolsAreUntouched() {
++    var bridge = new CanopyChatContinuity();
++    ByteBuf input = Unpooled.wrappedBuffer(new byte[]{1, 2, 3});
++    try {
++      assertSame(input, bridge.clientbound(input, 774));
++      assertSame(input, bridge.clientbound(input, 778));
++      assertEquals(0, input.readerIndex());
++    } finally { input.release(); }
 +  }
 +}
 diff --git a/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyChunkViewTest.java b/proxy/src/test/java/com/velocitypowered/proxy/connection/client/CanopyChunkViewTest.java

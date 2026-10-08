@@ -53,6 +53,11 @@ explicitly permits a lower mode when configuration or protocol checks fail befor
 A different client world or dimension type rejects the switch before detaching the source.
 Vanilla gameplay respawns, such as death, remain normal backend packets.
 
+CSG retains the recipient's global player-chat counter when configuration is skipped and resets it
+for a normal configuration transition. This counter is independent of the signed sender index;
+message signatures and body bytes are preserved. Backend signed-chat session and signature-cache
+migration are separate requirements and are not supplied by this counter translation alone.
+
 Legacy `canopy.noRespawn=true` selects SEAMLESS, while `canopy.seamless=true` selects FAST.
 An explicit `canopy.mode` takes precedence. The legacy properties no longer bypass compatibility checks.
 
