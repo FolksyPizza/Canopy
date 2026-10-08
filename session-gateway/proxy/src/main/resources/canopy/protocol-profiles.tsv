@@ -472,3 +472,12 @@
 777 SB 8 9
 777 SB 1b 1c
 777 SB 21 22
+
+# Native signed-chat session update (kept verbatim during trusted handoff)
+771 SB 9 9
+772 SB 9 9
+773 SB 9 9
+774 SB 9 9
+775 SB 9 a
+776 SB 9 a
+777 SB 9 a

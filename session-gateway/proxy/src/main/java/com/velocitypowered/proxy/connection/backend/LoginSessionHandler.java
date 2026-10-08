@@ -174,6 +174,29 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
       return true;
     }
 
+    if (!serverConn.isCanopyShadow()
+        && serverConn.getCanopyMode() != com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.Mode.NORMAL
+        && switchingPlayer.getConnection().getActiveSessionHandler() instanceof ClientPlaySessionHandler play
+        && play.signedChat().required()) {
+      var capture = play.signedChat().capture(serverConn);
+      var captureAttempt = play.signedChat().attemptId(serverConn);
+      capture.whenCompleteAsync((unused, failure) -> {
+        if (failure != null) {
+          if (switchingPlayer.getConnectionInFlight() == serverConn) play.getCanopyHandover().cancel();
+          resultFuture.completeExceptionally(failure);
+          serverConn.disconnect();
+        } else if (!serverConn.isActive() || !play.signedChat().ownsAttempt(captureAttempt, serverConn)) {
+          var expired = new IllegalStateException("Chat capture no longer owns destination");
+          play.signedChat().abortAttempt(captureAttempt, serverConn, expired);
+          resultFuture.completeExceptionally(expired);
+          serverConn.disconnect();
+        } else beginConfiguration();
+      }, switchingPlayer.getConnection().eventLoop());
+    } else beginConfiguration();
+    return true;
+  }
+
+  private void beginConfiguration() {
     // The player has been logged on to the backend server, but we're not done yet. There could be
     // other problems that could arise before we get a JoinGame packet from the server.
 
@@ -203,8 +226,8 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
       }
     }
 
-    return true;
   }
+
 
   static com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.Mode selectCanopyMode(
       ConnectedPlayer player, VelocityServerConnection destination) {

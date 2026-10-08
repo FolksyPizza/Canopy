@@ -127,6 +127,7 @@ public class ClientConfigSessionHandler implements MinecraftSessionHandler {
 
   @Override
   public boolean handle(final PluginMessagePacket packet) {
+    if (ChatStateFrame.CHANNEL.equals(packet.getChannel())) return true;
     final VelocityServerConnection serverConn = player.getConnectionInFlight();
     if (PluginMessageUtil.isMcBrand(packet)) {
       final String brand = PluginMessageUtil.readBrandMessage(packet.content());

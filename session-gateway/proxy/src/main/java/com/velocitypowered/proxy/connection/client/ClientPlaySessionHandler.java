@@ -120,6 +120,12 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
   private static final Logger logger = LogManager.getLogger(ClientPlaySessionHandler.class);
 
   private final ConnectedPlayer player;
+  private CanopySignedChatHandoff signedChat;
+
+  public CanopySignedChatHandoff signedChat() {
+    if (signedChat == null) signedChat = new CanopySignedChatHandoff(player);
+    return signedChat;
+  }
   private boolean spawned = false;
   private final List<UUID> serverBossBars = new ArrayList<>();
   private final Queue<PluginMessagePacket> loginPluginMessages = new ConcurrentLinkedQueue<>();
@@ -204,6 +210,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
 
   @Override
   public void deactivated() {
+    if (signedChat != null) signedChat.disconnect();
     if (canopyHandover != null) canopyHandover.abandon();
     player.discardChatQueue();
     PluginMessagePacket message;
@@ -274,6 +281,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
 
   @Override
   public boolean handle(SessionPlayerCommandPacket packet) {
+    if (signedChat().bufferInput(packet)) return true;
     if (player.getCurrentServer().isEmpty()) {
       return true;
     }
@@ -291,6 +299,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
 
   @Override
   public boolean handle(SessionPlayerChatPacket packet) {
+    if (signedChat().bufferInput(packet)) return true;
     if (player.getCurrentServer().isEmpty()) {
       return true;
     }
@@ -308,6 +317,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
 
   @Override
   public boolean handle(KeyedPlayerCommandPacket packet) {
+    if (signedChat().bufferInput(packet)) return true;
     if (player.getCurrentServer().isEmpty()) {
       return true;
     }
@@ -325,6 +335,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
 
   @Override
   public boolean handle(KeyedPlayerChatPacket packet) {
+    if (signedChat().bufferInput(packet)) return true;
     if (player.getCurrentServer().isEmpty()) {
       return true;
     }
@@ -372,6 +383,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
 
   @Override
   public boolean handle(PluginMessagePacket packet) {
+    if (ChatStateFrame.CHANNEL.equals(packet.getChannel())) return true;
     // Handling edge case when packet with FML client handshake (state COMPLETE)
     // arrives after JoinGame packet from destination server
     VelocityServerConnection serverConn =
@@ -499,6 +511,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
 
   @Override
   public boolean handle(ChatAcknowledgementPacket packet) {
+    if (signedChat().bufferInput(packet)) return true;
     if (player.getCurrentServer().isEmpty()) {
       return true;
     }
@@ -559,6 +572,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
 
   @Override
   public void handleUnknown(ByteBuf buf) {
+    if (signedChat().bufferRawChatInput(buf)) return;
     CanopyLifecycleHooks.trace(player.getUniqueId(), "serverbound", buf);
     // Raw PLAY packets include the movement IDs Velocity does not register as MinecraftPacket instances.
     // Apply the explicit handover allow-list before the transition can temporarily clear connectedServer.

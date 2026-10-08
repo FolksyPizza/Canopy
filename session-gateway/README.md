@@ -58,6 +58,17 @@ for a normal configuration transition. This counter is independent of the signed
 message signatures and body bytes are preserved. Backend signed-chat session and signature-cache
 migration are separate requirements and are not supplied by this counter translation alone.
 
+The experimental native chat handoff requires `canopy.chatHandoff.enabled=true` and
+`canopy.chatHandoff.keyFile` pointing to a private shared key. Every participating Paper backend
+needs the matching native adapter. CSG drains chat input, requests an authenticated source snapshot,
+and waits for destination restoration before detaching the source. The adapter preserves the
+recipient acknowledgement window, signature cache, validated chat session and sender chain.
+Timeouts and failed restoration keep the source attached; queued source chat is replayed on abort.
+Frames bind player, attempt and both backends, expire after at most 30 seconds, and have bounded
+fragment and queue sizes. Signature verification remains enabled. Missing adapters reject the
+transfer rather than discarding signed state. This path is experimental and currently excludes
+shadow promotion and general Folia qualification; authenticated client tests are still required.
+
 Legacy `canopy.noRespawn=true` selects SEAMLESS, while `canopy.seamless=true` selects FAST.
 An explicit `canopy.mode` takes precedence. The legacy properties no longer bypass compatibility checks.
 

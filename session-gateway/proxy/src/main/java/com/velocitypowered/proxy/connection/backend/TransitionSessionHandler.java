@@ -55,6 +55,53 @@ public class TransitionSessionHandler implements MinecraftSessionHandler {
   private final VelocityServerConnection serverConn;
   private final CompletableFuture<Impl> resultFuture;
   private final BungeeCordMessageResponder bungeecordMessageResponder;
+  private final java.util.ArrayDeque<Object> deferredChatJoin = new java.util.ArrayDeque<>();
+  private int deferredChatBytes;
+
+  private boolean chatPending() {
+    return serverConn.getPlayer().getConnection().getActiveSessionHandler() instanceof ClientPlaySessionHandler play
+        && play.signedChat().attemptId(serverConn) != null;
+  }
+
+  private void deferChatJoin(Object packet) {
+    int size;
+    try { size = com.velocitypowered.proxy.connection.client.CanopySignedChatHandoff.packetSize(packet,
+        com.velocitypowered.proxy.protocol.ProtocolUtils.Direction.CLIENTBOUND,
+        serverConn.getPlayer().getProtocolVersion(), 8388608); }
+    catch (RuntimeException encodingFailure) {
+      ((ClientPlaySessionHandler) serverConn.getPlayer().getConnection().getActiveSessionHandler())
+          .signedChat().abort(encodingFailure);
+      releaseDeferred(); return;
+    }
+    if (deferredChatJoin.size() >= 256 || deferredChatBytes + size > 8388608) {
+      ((ClientPlaySessionHandler) serverConn.getPlayer().getConnection().getActiveSessionHandler())
+          .signedChat().abort(new IllegalStateException("Destination chat join output exceeded bound"));
+      releaseDeferred();
+      return;
+    }
+    deferredChatBytes += size;
+    deferredChatJoin.add(io.netty.util.ReferenceCountUtil.retain(packet));
+  }
+
+  @Override public void handleUnknown(io.netty.buffer.ByteBuf packet) {
+    if (!chatPending()) return;
+    com.velocitypowered.proxy.connection.client.CanopyProtocolProfile profile =
+        com.velocitypowered.proxy.connection.client.CanopyProtocolProfile.find(serverConn.getPlayer().getProtocolVersion().getProtocol());
+    if (profile != null && profile.clientbound(com.velocitypowered.proxy.protocol.ProtocolUtils.readVarInt(packet.duplicate())) == 0x3f
+        && !((ClientPlaySessionHandler) serverConn.getPlayer().getConnection().getActiveSessionHandler())
+            .signedChat().restored()) return;
+    deferChatJoin(packet);
+  }
+
+  @Override public void handleGeneric(com.velocitypowered.proxy.protocol.MinecraftPacket packet) {
+    if (chatPending()) deferChatJoin(packet);
+  }
+
+  private void releaseDeferred() {
+    deferredChatJoin.forEach(io.netty.util.ReferenceCountUtil::release);
+    deferredChatJoin.clear(); deferredChatBytes = 0;
+  }
+
 
   /**
    * Creates the new transition handler.
@@ -111,6 +158,7 @@ public class TransitionSessionHandler implements MinecraftSessionHandler {
         && serverConn.getPlayer().getConnection().getActiveSessionHandler()
             instanceof ClientPlaySessionHandler play
         && !play.canopySameWorld(packet)) {
+      play.signedChat().abort(new IllegalStateException("Seamless destination world mismatch"));
       play.getCanopyHandover().cancel();
       resultFuture.complete(ConnectionRequestResults.forDisconnect(
           DisconnectPacket.create(net.kyori.adventure.text.Component.text(
@@ -119,35 +167,57 @@ public class TransitionSessionHandler implements MinecraftSessionHandler {
       serverConn.disconnect();
       return true;
     }
+    if (serverConn.getPlayer().getConnection().getActiveSessionHandler() instanceof ClientPlaySessionHandler play
+        && serverConn.getCanopyMode() != com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.Mode.NORMAL
+        && play.signedChat().required()) {
+      var restoreAttempt = play.signedChat().attemptId(serverConn);
+      play.signedChat().restore(serverConn).whenCompleteAsync((unused, failure) -> {
+        if (failure != null) resultFuture.completeExceptionally(failure);
+        else if (!play.signedChat().ownsAttempt(restoreAttempt, serverConn)
+            || !play.signedChat().canCommit(serverConn)) {
+          var expired = new IllegalStateException("Chat handoff no longer owns source/destination");
+          play.signedChat().abortAttempt(restoreAttempt, serverConn, expired);
+          resultFuture.completeExceptionally(expired);
+        } else finishJoin(packet, smc);
+      }, smc.eventLoop());
+    } else finishJoin(packet, smc);
+    return true;
+  }
+
+  private void finishJoin(JoinGamePacket packet, MinecraftConnection smc) {
+    if (!serverConn.isActive()) {
+      resultFuture.completeExceptionally(new IllegalStateException("Destination closed before source detach"));
+      return;
+    }
     final RegisteredServer previousServer = serverConn.getPreviousServer().orElse(null);
     final ConnectedPlayer player = serverConn.getPlayer();
     final VelocityServerConnection existingConnection = player.getConnectedServer();
 
-    if (existingConnection != null) {
-      // Shut down the existing server connection.
-      player.setConnectedServer(null);
-      existingConnection.disconnect();
+    final ClientPlaySessionHandler nativePlay = player.getConnection().getActiveSessionHandler()
+        instanceof ClientPlaySessionHandler play && play.signedChat().required()
+        && serverConn.getCanopyMode() != com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.Mode.NORMAL
+        ? play : null;
+    final java.util.UUID nativeAttempt = nativePlay == null ? null : nativePlay.signedChat().attemptId(serverConn);
+    final java.util.concurrent.atomic.AtomicBoolean finishStarted = new java.util.concurrent.atomic.AtomicBoolean();
+    final java.util.concurrent.atomic.AtomicBoolean finishCommitted = new java.util.concurrent.atomic.AtomicBoolean();
+    if (nativePlay == null) detachSource(player, existingConnection, packet);
 
-      // Send keep alive to try to avoid timeouts
-      player.sendKeepAlive();
-    }
-
-    // Reset Tablist header and footer to prevent desync
-    player.clearPlayerListHeaderAndFooter();
-
-    // Override online mode
-    packet.setOnlineMode(player.isOnlineMode());
-
-    // The goods are in hand! We got JoinGame. Let's transition completely to the new state.
+    // Retain the native source throughout asynchronous connection listeners. The final checked
+    // detach, join and chat commit then run together on the shared player/backend event loop.
     smc.setAutoReading(false);
-    server.getEventManager()
-        .fire(new ServerConnectedEvent(player, serverConn.getServer(), previousServer))
-        .thenRunAsync(() -> {
+    var connectedEvent = server.getEventManager()
+        .fire(new ServerConnectedEvent(player, serverConn.getServer(), previousServer));
+    Runnable finish = () -> {
           // Make sure we can still transition (player might have disconnected here).
           if (!serverConn.isActive()) {
             // Connection is obsolete.
             serverConn.disconnect();
             return;
+          }
+
+          if (nativePlay != null) {
+            finishStarted.set(true);
+            detachSource(player, existingConnection, packet);
           }
 
           // Change the client to use the ClientPlaySessionHandler if required.
@@ -167,6 +237,18 @@ public class TransitionSessionHandler implements MinecraftSessionHandler {
           smc.setActiveSessionHandler(StateRegistry.PLAY,
               CanopyServingSessionHandler.wrap(new BackendPlaySessionHandler(server, serverConn), smc, playHandler));
 
+          // Deliver destination startup output only after native signed state restoration.
+          var backendHandler = smc.getActiveSessionHandler();
+          while (!deferredChatJoin.isEmpty()) {
+            Object queued = deferredChatJoin.remove();
+            try {
+              if (queued instanceof io.netty.buffer.ByteBuf raw) backendHandler.handleUnknown(raw);
+              else if (queued instanceof com.velocitypowered.proxy.protocol.MinecraftPacket decoded
+                  && !decoded.handle(backendHandler)) backendHandler.handleGeneric(decoded);
+            } finally { io.netty.util.ReferenceCountUtil.release(queued); }
+          }
+          deferredChatBytes = 0;
+
           // Now set the connected server.
           serverConn.getPlayer().setConnectedServer(serverConn);
 
@@ -174,6 +256,11 @@ public class TransitionSessionHandler implements MinecraftSessionHandler {
           // Do this after setting the connection, so no incoming packets are processed before
           // the API knows which server the player is connected to.
           smc.setAutoReading(true);
+          if (playHandler.signedChat().required() && serverConn.getCanopyMode()
+              != com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.Mode.NORMAL) {
+            playHandler.signedChat().commit(playHandler);
+            finishCommitted.set(true);
+          }
 
           // Send client settings. In 1.20.2+ this is done in the config state.
           if (smc.getProtocolVersion().lessThan(ProtocolVersion.MINECRAFT_1_20_2)
@@ -185,20 +272,46 @@ public class TransitionSessionHandler implements MinecraftSessionHandler {
           server.getEventManager().fireAndForget(new ServerPostConnectEvent(player,
               previousServer));
           resultFuture.complete(ConnectionRequestResults.successful(serverConn.getServer()));
-        }, smc.eventLoop()).exceptionally(exc -> {
-          logger.error("Unable to switch to new server {} for {}",
-              serverConn.getServerInfo().getName(),
-              player.getUsername(), exc);
-          player.disconnect(ConnectionMessages.INTERNAL_SERVER_CONNECTION_ERROR);
-          resultFuture.completeExceptionally(exc);
-          return null;
-        });
+        };
+    CompletableFuture<Void> completed = nativePlay == null
+        ? connectedEvent.thenRunAsync(finish, smc.eventLoop())
+        : nativePlay.signedChat().finishAfter(nativeAttempt, connectedEvent, serverConn, smc.eventLoop(), finish);
+    completed.exceptionallyAsync(exc -> {
+      releaseDeferred();
+      if (nativePlay != null && !nativePlay.signedChat().shouldRemediateFailure(nativeAttempt,
+          serverConn, existingConnection, finishStarted.get(), finishCommitted.get())) {
+        resultFuture.completeExceptionally(exc);
+        return null;
+      }
+      if (nativePlay != null && existingConnection != null && existingConnection.isActive()
+          && player.getConnectedServer() == existingConnection) {
+        nativePlay.signedChat().abortAttempt(nativeAttempt, serverConn, exc);
+      } else {
+        logger.error("Unable to switch to new server {} for {}",
+            serverConn.getServerInfo().getName(), player.getUsername(), exc);
+        player.disconnect(ConnectionMessages.INTERNAL_SERVER_CONNECTION_ERROR);
+      }
+      resultFuture.completeExceptionally(exc);
+      return null;
+    }, smc.eventLoop());
+  }
 
-    return true;
+  private void detachSource(ConnectedPlayer player, VelocityServerConnection existing,
+      JoinGamePacket packet) {
+    if (existing != null) {
+      player.setConnectedServer(null);
+      existing.disconnect();
+      player.sendKeepAlive();
+    }
+    player.clearPlayerListHeaderAndFooter();
+    packet.setOnlineMode(player.isOnlineMode());
   }
 
   @Override
   public boolean handle(DisconnectPacket packet) {
+    if (chatPending()) ((ClientPlaySessionHandler) serverConn.getPlayer().getConnection().getActiveSessionHandler())
+        .signedChat().abort(new IllegalStateException("Destination disconnected during chat restore"));
+    releaseDeferred();
     final MinecraftConnection connection = serverConn.ensureConnected();
     serverConn.disconnect();
 
@@ -217,6 +330,9 @@ public class TransitionSessionHandler implements MinecraftSessionHandler {
 
   @Override
   public boolean handle(PluginMessagePacket packet) {
+    if (serverConn.getPlayer().getConnection().getActiveSessionHandler() instanceof ClientPlaySessionHandler play
+        && play.signedChat().receive(serverConn, packet)) return true;
+    if (chatPending()) { deferChatJoin(packet); return true; }
     if (bungeecordMessageResponder.process(packet)) {
       return true;
     }
@@ -244,6 +360,9 @@ public class TransitionSessionHandler implements MinecraftSessionHandler {
 
   @Override
   public void disconnected() {
+    if (chatPending()) ((ClientPlaySessionHandler) serverConn.getPlayer().getConnection().getActiveSessionHandler())
+        .signedChat().abort(new IllegalStateException("Destination closed during chat restore"));
+    releaseDeferred();
     resultFuture.complete(ConnectionRequestResults.forDisconnect(
         ConnectionMessages.INTERNAL_SERVER_CONNECTION_ERROR, serverConn.getServer()));
   }

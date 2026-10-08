@@ -59,7 +59,7 @@ public final class CanopyShadow {
 
   /** The source asks for (or refreshes) a shadow with {@code target}, whose side of the seam at x = boundaryX is given. */
   public synchronized void request(String target, double boundaryX, boolean destinationOwnsEast) {
-    if (!Boolean.getBoolean("canopy.shadow") || !Boolean.getBoolean("canopy.shadow.experimental")
+    if (Boolean.getBoolean("canopy.chatHandoff.enabled") || !Boolean.getBoolean("canopy.shadow") || !Boolean.getBoolean("canopy.shadow.experimental")
         || CanopySwitchPolicy.requested() != CanopySwitchPolicy.Mode.SEAMLESS
         || Boolean.getBoolean("canopy.sessions") || Boolean.getBoolean("canopy.managed.sessions.enabled")) {
       return; // native ghost lifecycle is not safe for production or managed sessions yet
@@ -112,7 +112,7 @@ public final class CanopyShadow {
 
   /** A crossing to {@code target} with an attached shadow: promote it once the source confirms its snapshot. */
   public synchronized boolean armPromotion(String target, VelocityServerConnection source, UUID transferId) {
-    if (conn == null || joinGame == null || source == null || player.getConnectedServer() != source
+    if (Boolean.getBoolean("canopy.chatHandoff.enabled") || conn == null || joinGame == null || source == null || player.getConnectedServer() != source
         || target == null || !target.equalsIgnoreCase(this.target)) {
       return false;
     }

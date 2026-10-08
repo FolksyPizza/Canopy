@@ -101,6 +101,9 @@ public final class CanopyShadowSessionHandler implements MinecraftSessionHandler
    */
   public static void promote(VelocityServer server, VelocityServerConnection shadow, JoinGamePacket joinGame,
                              ClientPlaySessionHandler playHandler) {
+    if (playHandler.signedChat().required()) {
+      throw new IllegalStateException("Shadow promotion has no native signed-chat restore hook");
+    }
     ConnectedPlayer player = shadow.getPlayer();
     VelocityServerConnection existing = player.getConnectedServer();
     RegisteredServer previous = existing == null ? null : existing.getServer();

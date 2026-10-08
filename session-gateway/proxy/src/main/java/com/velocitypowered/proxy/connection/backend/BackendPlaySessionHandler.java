@@ -302,6 +302,7 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
 
   @Override
   public boolean handle(PluginMessagePacket packet) {
+    if (playerSessionHandler.signedChat().receive(serverConn, packet)) return true;
     if (bungeecordMessageResponder.process(packet)) {
       return true;
     }
@@ -563,6 +564,10 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
   }
 
   public void handlePreparedUnknown(ByteBuf buf, java.util.List<ByteBuf> instead) {
+    if (playerSessionHandler.signedChat().sourceChat(serverConn, buf)) {
+      if (instead != null) instead.forEach(io.netty.util.ReferenceCountUtil::release);
+      return;
+    }
     com.velocitypowered.proxy.connection.client.CanopyLifecycleHooks.trace(serverConn.getPlayer().getUniqueId(), "clientbound", buf);
     // Experimental no-respawn switch: remap the player's own entity id and track spawned entities.
     // A no-op unless -Dcanopy.noRespawn is set and the client is on the supported protocol.
