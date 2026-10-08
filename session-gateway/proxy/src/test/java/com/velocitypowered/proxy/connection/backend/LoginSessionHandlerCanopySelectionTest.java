@@ -34,6 +34,7 @@ class LoginSessionHandlerCanopySelectionTest {
       ConnectedPlayer player = mock(ConnectedPlayer.class);
       when(player.getUniqueId()).thenReturn(playerId);
       when(player.getProtocolVersion()).thenReturn(ProtocolVersion.getProtocolVersion(774));
+      when(player.getCanopyConfiguration()).thenReturn("b".repeat(64));
       when(player.getConnectedServer()).thenReturn(null);
 
       RegisteredServer previous = mock(RegisteredServer.class);
@@ -43,6 +44,26 @@ class LoginSessionHandlerCanopySelectionTest {
       when(destination.getServerInfo()).thenReturn(serverInfo("destination"));
 
       assertEquals(CanopySwitchPolicy.Mode.SEAMLESS,
+          LoginSessionHandler.selectCanopyMode(player, destination));
+    }
+  }
+
+  @Test
+  void staleSourceConfigurationFallsBackBeforeSeamlessSwitch() {
+    UUID playerId = UUID.randomUUID();
+    try (PropertyRestore ignored = seamlessWithMatchingFingerprints(playerId)) {
+      ConnectedPlayer player = mock(ConnectedPlayer.class);
+      when(player.getUniqueId()).thenReturn(playerId);
+      when(player.getProtocolVersion()).thenReturn(ProtocolVersion.getProtocolVersion(774));
+      when(player.getCanopyConfiguration()).thenReturn("c".repeat(64));
+
+      RegisteredServer previous = mock(RegisteredServer.class);
+      when(previous.getServerInfo()).thenReturn(serverInfo("source"));
+      VelocityServerConnection destination = mock(VelocityServerConnection.class);
+      when(destination.getPreviousServer()).thenReturn(Optional.of(previous));
+      when(destination.getServerInfo()).thenReturn(serverInfo("destination"));
+
+      assertEquals(CanopySwitchPolicy.Mode.NORMAL,
           LoginSessionHandler.selectCanopyMode(player, destination));
     }
   }
@@ -83,6 +104,7 @@ class LoginSessionHandlerCanopySelectionTest {
       ConnectedPlayer player = mock(ConnectedPlayer.class);
       when(player.getUniqueId()).thenReturn(playerId);
       when(player.getConnectedServer()).thenReturn(null);
+      when(player.getCanopyConfiguration()).thenReturn("b".repeat(64));
 
       RegisteredServer previous = mock(RegisteredServer.class);
       when(previous.getServerInfo()).thenReturn(serverInfo("source"));
@@ -90,6 +112,7 @@ class LoginSessionHandlerCanopySelectionTest {
       when(destination.getPreviousServer()).thenReturn(Optional.of(previous));
       when(destination.getServerInfo()).thenReturn(serverInfo("destination"));
       for (int protocol : CanopyProtocolProfile.supportedProtocols()) {
+        when(player.getCanopyConfiguration()).thenReturn("b".repeat(64));
         when(player.getProtocolVersion()).thenReturn(ProtocolVersion.getProtocolVersion(protocol));
         CanopySwitchPolicy.markPlatform(playerId, CanopySwitchPolicy.Platform.JAVA);
         CanopySwitchPolicy.Mode expected = protocol == 776
@@ -101,6 +124,7 @@ class LoginSessionHandlerCanopySelectionTest {
         String destinationKey = "canopy.configurationFingerprint." + protocol + ".destination";
         System.setProperty(sourceKey, "c".repeat(64));
         System.setProperty(destinationKey, "c".repeat(64));
+        when(player.getCanopyConfiguration()).thenReturn("c".repeat(64));
         assertEquals(CanopySwitchPolicy.Mode.SEAMLESS,
             LoginSessionHandler.selectCanopyMode(player, destination),
             "a matching approval for protocol " + protocol + " enables only that protocol's session");

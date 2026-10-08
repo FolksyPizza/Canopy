@@ -213,13 +213,18 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
     String sourceName = requestedSource != null ? requestedSource.getServerInfo().getName()
         : connectedSource != null ? connectedSource.getServerInfo().getName() : null;
     boolean initialLogin = sourceName == null;
+    int protocol = player.getProtocolVersion().getProtocol();
+    String approvedSource = sourceName == null ? ""
+        : com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.configurationFingerprint(protocol, sourceName);
+    String approvedDestination = com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.configurationFingerprint(
+        protocol, destination.getServerInfo().getName());
+    // A persisted approval can outlive backend configuration changes. Require the current session's
+    // actual source fingerprint to match it so drift falls back before the client starts switching.
     boolean redundantConfiguration = sourceName != null
         && com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.sameConfiguration(
-            com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.configurationFingerprint(
-                player.getProtocolVersion().getProtocol(), sourceName),
-            com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.configurationFingerprint(
-                player.getProtocolVersion().getProtocol(),
-                destination.getServerInfo().getName()));
+            approvedSource, approvedDestination)
+        && com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.sameConfiguration(
+            player.getCanopyConfiguration(), approvedSource);
     return com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.select(
         com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.requested(player.getUniqueId()),
         com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.fallback(),
