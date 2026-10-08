@@ -31,11 +31,22 @@ Initial login always performs configuration and JoinGame.
 | FAST | Skip redundant configuration; retain the upstream JoinGame/Respawn transition. |
 | SEAMLESS | Skip redundant configuration, preserve the client world, translate backend entity IDs and refresh backend state. No switch-time JoinGame or Respawn. |
 
-FAST and SEAMLESS require matching deployment fingerprints on the source and destination:
-`-Dcanopy.configurationFingerprint.<backend>=<64-hex-digest>`.
-These are operator assertions, not hashes measured by CSG. Generate them from all client-visible
-configuration, including registries, tags, enabled features and resource packs. Update them whenever
-that configuration changes. Without matching valid fingerprints, FAST performs NORMAL instead.
+FAST and SEAMLESS require matching, native-protocol-scoped configuration fingerprints on the source
+and destination. CanopyMaintenance measures backend configuration during normal sessions and stores
+operator-approved values in its private `configuration-parity.properties`; the gateway reads keys in
+the form `protocol.<protocol>.<backend>=<64-hex-digest>`. The equivalent runtime property is
+`-Dcanopy.configurationFingerprint.<protocol>.<backend>=<64-hex-digest>`. The fingerprint covers
+client-visible configuration, including registries, tags, enabled features and resource packs. Recheck
+and approve it after any such configuration change. Without equal valid values for the player's native
+protocol, FAST performs NORMAL instead.
+
+`/csg parity` lists every supported native Java protocol and each registered backend's measured
+fingerprint. A status of MATCH means all currently registered backends have a complete equal
+measurement; it is not an approval. After every backend has been sampled through normal sessions,
+`/csg parity approve <protocol>` explicitly approves that protocol. Approval is independent per
+protocol and includes every currently registered backend; if another backend is added, it must be
+measured before all-backend parity can be approved. Transfers still check the source and destination
+fingerprints for that client's protocol, and an absent or unequal value keeps the normal fallback.
 
 SEAMLESS rejects unsupported switches by default. `-Dcanopy.modeFallback=FAST` or `NORMAL`
 explicitly permits a lower mode when configuration or protocol checks fail before configuration.

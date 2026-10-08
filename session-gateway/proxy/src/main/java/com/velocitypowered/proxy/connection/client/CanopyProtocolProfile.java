@@ -22,6 +22,7 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 /** Explicit wire packet tables. Unknown future protocols never inherit another version's IDs. */
 public final class CanopyProtocolProfile {
@@ -38,6 +39,10 @@ public final class CanopyProtocolProfile {
 
   public static CanopyProtocolProfile find(int protocol) {
     return PROFILES.get(protocol);
+  }
+
+  public static Set<Integer> supportedProtocols() {
+    return Set.copyOf(PROFILES.keySet());
   }
 
   public int protocol() { return protocol; }

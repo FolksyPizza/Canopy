@@ -46,6 +46,8 @@ class CanopyProtocolProfileTest {
   }
 
   @Test void allReleasedTargetProtocolsHaveExplicitProfilesAndUnknownVersionsDoNot() {
+    assertEquals(java.util.Set.of(771, 772, 773, 774, 775, 776, 777),
+        CanopyProtocolProfile.supportedProtocols());
     for (int protocol : PROTOCOLS) {
       assertTrue(ProtocolVersion.isSupported(protocol));
       assertNotNull(CanopyProtocolProfile.find(protocol));

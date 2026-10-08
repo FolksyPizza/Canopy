@@ -213,12 +213,15 @@ contracts have a stability and compatibility policy.
 
 ## Running
 
-A minimal cluster is two Paper/Folia backends behind one Session Gateway.
+A minimal cluster is two Paper/Folia backends behind one Session Gateway. The gateway and parity
+controls can register and compare more than two backends; the current Paper shard transfer prototype
+still models one X-axis boundary and one `transfer.peer-server` per process, so arbitrary multi-shard
+world routing requires further implementation.
 
 1. Place `canopy-*.jar` in each backend's `plugins/`, and `canopy-switch-*.jar` in the
    gateway's `plugins/`.
-2. Configure the gateway's modern forwarding and register the two backends (for example
-   `west` and `east`).
+2. Configure the gateway's modern forwarding and register all backends (for example
+   `west`, `east`, and additional shards).
 3. In each backend's `plugins/Canopy/config.yml`, set a unique `shard.id`, the peer's gRPC
    address in `shard.peers`, and the `transfer` section (boundary, buffer, `owns`,
    `peer-server`, ports).

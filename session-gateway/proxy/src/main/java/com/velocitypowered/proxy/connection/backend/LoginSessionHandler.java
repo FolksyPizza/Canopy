@@ -215,8 +215,10 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
     boolean initialLogin = sourceName == null;
     boolean redundantConfiguration = sourceName != null
         && com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.sameConfiguration(
-            com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.configurationFingerprint(sourceName),
             com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.configurationFingerprint(
+                player.getProtocolVersion().getProtocol(), sourceName),
+            com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.configurationFingerprint(
+                player.getProtocolVersion().getProtocol(),
                 destination.getServerInfo().getName()));
     return com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.select(
         com.velocitypowered.proxy.connection.client.CanopySwitchPolicy.requested(player.getUniqueId()),

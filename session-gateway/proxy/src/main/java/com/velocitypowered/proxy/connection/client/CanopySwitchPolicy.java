@@ -139,6 +139,11 @@ public final class CanopySwitchPolicy {
     return System.getProperty("canopy.configurationFingerprint." + backend, "");
   }
 
+  /** Returns only the parity approval measured for this client's native protocol. */
+  public static String configurationFingerprint(int protocol, String backend) {
+    return System.getProperty("canopy.configurationFingerprint." + protocol + "." + backend, "");
+  }
+
   /** Fingerprints cover registries, tags, packs and all client-visible configuration. */
   public static boolean sameConfiguration(String source, String destination) {
     return source != null && source.matches("(?i)[0-9a-f]{64}")
