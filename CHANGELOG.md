@@ -7,6 +7,8 @@ wire formats and on-disk layouts can change between commits.
 ## [Unreleased]
 
 ### Added
+- Continuous integration: every push to `main` or a feature branch, and every pull request, builds and tests all three
+  modules with `dev/canopy-dev test`.
 - Canopy Session Gateway as a source overlay and patch on a pinned Velocity revision, with protocol-aware chunk
   handling and managed player sessions. Native Java protocol profiles 771 to 777 are recognized.
 - Seamless backend switches are gated per protocol: each native protocol needs its own measured configuration
@@ -31,6 +33,8 @@ wire formats and on-disk layouts can change between commits.
   coverage are complete.
 
 ### Fixed
+- A client that disconnects during a seamless switch ends the signed chat handoff at once instead of after its
+  30-second deadline.
 - A seamless switch falls back to a normal switch when the source backend's configuration no longer matches its
   approved measurement.
 - Redis credentials no longer appear in diagnostics.

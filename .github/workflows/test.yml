@@ -1,0 +1,29 @@
+name: Test
+
+on:
+  push:
+    branches: [main, "feature/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      # The shard plugin and CanopySwitch build on Java 21; the Session Gateway needs Java 25.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            21
+            25
+      - name: Build and test every module
+        run: >
+          python3 dev/canopy_dev.py test
+          --java21-home "$JAVA_HOME_21_X64"
+          --java25-home "$JAVA_HOME_25_X64"
