@@ -604,6 +604,8 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
 
   @Override
   public void disconnected() {
+    // A client that drops mid-handoff ends the signed chat attempt now instead of at its deadline.
+    if (signedChat != null) signedChat.disconnect();
     if (canopyHandover != null) canopyHandover.abandon();
     if (canopyRewriter.isInitialized()) {
       logger.info("Canopy chunk view for {}: {}", player.getUsername(), canopyChunkView.stats());
