@@ -1,0 +1,13 @@
+Canopy
+Copyright (c) 2025-2026 William W. (FolksyPizza). All rights reserved.
+
+This software, including its source code, compiled code, documentation, protocols (including the Canopy Native
+Protocol), file and wire formats, and designs, is proprietary. No license or right is granted to
+anyone to use, copy, modify, distribute, sublicense, reverse engineer, decompile or disassemble it, except under a
+separate written agreement with the copyright holder, or where applicable law permits it despite this notice.
+
+Compiled releases published by the copyright holder may be used only under the release terms published with them.
+
+Exceptions: the directory session-gateway/ contains modifications of Velocity (https://github.com/PaperMC/Velocity),
+licensed under the GNU General Public License, version 3 (the text is in session-gateway/LICENSE). Those files
+remain under that license and are not covered by this notice. Third-party libraries keep their own licenses.
